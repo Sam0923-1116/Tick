@@ -473,11 +473,11 @@ const VIEWS = {
     const exam = db.exams.filter(e => daysUntil(e.date) >= 0).sort((a, b) => a.date.localeCompare(b.date))[0];
     const monthOut = sumBy(db.money.filter(x => x.type === "out" && x.date.startsWith(ymd().slice(0, 7))), "amount");
     const items = [
-      ["schedule", "📅", "課表", sched().name],
-      ["exams", "⏳", "考試倒數", exam ? `${exam.name} 剩 ${daysUntil(exam.date)} 天` : "還沒有考試"],
+      ["schedule", "📚", "課表", sched().name],
+      ["exams", "⏰", "考試倒數", exam ? `${exam.name} 剩 ${daysUntil(exam.date)} 天` : "還沒有考試"],
       ["unis", "🎓", "大學申請", `${db.unis.length} 間學校`],
-      ["money", "💰", "記帳", `本月支出 ${money(monthOut)}`],
-      ["habits", "✅", "習慣", `${db.habits.length} 個習慣`],
+      ["money", "🐷", "記帳", `本月支出 ${money(monthOut)}`],
+      ["habits", "🌱", "習慣", `${db.habits.length} 個習慣`],
       ["appearance", "🎨", "外觀與版面", "首頁卡片、主題色、背景"],
       ["settings", "☁️", "同步與備份", sync && sync.token ? `已同步 ${sync.lastSync ? hhmm(sync.lastSync) : ""}` : "還沒開啟雲端同步"],
     ];
