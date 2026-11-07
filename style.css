@@ -80,6 +80,9 @@ h3.date:first-child { margin-top: 0; }
 .row > .icon { font-size: 20px; width: 38px; height: 38px; line-height: 38px; border-radius: 50%; flex-shrink: 0; }
 h3.group { font-size: 13px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; margin: 18px 4px 6px; }
 h3.group:first-child { margin-top: 4px; }
+/* Text sitting straight on the background: white when there's a custom background or dark mode */
+body.custom-bg h3.group, body.custom-bg .topline { color: #fff; text-shadow: 0 1px 3px rgba(0, 0, 0, .45); }
+@media (prefers-color-scheme: dark) { h3.group, .topline { color: #fff; } }
 .muted { color: var(--muted); }
 .small { font-size: 13px; }
 .center { text-align: center; }
