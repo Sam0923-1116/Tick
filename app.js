@@ -25,6 +25,8 @@ const HOME_CARDS = [["classes", "📚 Classes"], ["agenda", "📆 Today's events
 const HOME_DEFAULT = ["classes", "agenda", "tasks", "exam", "focus"];
 const BG_COLORS = ["#FDE2E4", "#FFF1C1", "#E2F0CB", "#DFE7FD", "#E8DFF5", "#D9F2F2", "#2B2D42", "#0B3D2E"];
 const REPEATS = [["none", "Never"], ["daily", "Every day"], ["weekly", "Every week"], ["monthly", "Every month"], ["yearly", "Every year"]];
+const REMINDS = [["", "No reminder"], ["0", "At start time (8:00 if all day)"], ["10", "10 min before"], ["30", "30 min before"], ["60", "1 hour before"], ["1440", "1 day before"]];
+const TASK_REMIND_TIMES = [["", "Off"], ["18:00", "18:00"], ["19:00", "19:00"], ["20:00", "20:00"], ["21:00", "21:00"], ["22:00", "22:00"]];
 
 // Old Chinese values saved before the app switched to English
 const OLD_NAMES = {
@@ -50,7 +52,7 @@ const toMin = t => { const [h, m] = t.split(":").map(Number); return h * 60 + m;
 const find = (arr, id) => arr.find(x => x.id === id);
 const sumBy = (arr, k) => arr.reduce((s, x) => s + Number(x[k] || 0), 0);
 const money = n => "$" + Math.round(n).toLocaleString();
-const fmtMin = m => m >= 60 ? `${Math.floor(m / 60)} h ${m % 60} min` : `${m} min`;
+const fmtMin = m => m >= 60 ? `${Math.floor(m / 60)} h${m % 60 ? ` ${m % 60} min` : ""}` : `${m} min`;
 const byDue = (a, b) => (a.due || "9999").localeCompare(b.due || "9999");
 const hhmm = ts => { const d = new Date(ts); return `${MONTHS[d.getMonth()]} ${d.getDate()} ${pad(d.getHours())}:${pad(d.getMinutes())}`; };
 const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
@@ -82,8 +84,8 @@ function fresh() {
   const s = { id: uid(), name: "My timetable", classes: [] };
   return {
     version: 1, updatedAt: 0, schedules: [s], activeSchedule: s.id,
-    tasks: [], todos: [], events: [], focus: [], exams: [], unis: [], money: [], habits: [], habitLog: {},
-    settings: { work: 25, brk: 5 }, timer: null, lastBackup: null,
+    tasks: [], todos: [], events: [], focus: [], exams: [], unis: [], money: [], habits: [], habitLog: {}, holidays: [],
+    settings: { work: 25, brk: 5, goal: 120, taskRemind: "20:00" }, timer: null, lastBackup: null,
   };
 }
 
@@ -101,6 +103,7 @@ function load() {
   let d = null;
   try { d = JSON.parse(localStorage.getItem(KEY)); } catch {}
   d = d && d.version ? migrate({ ...fresh(), ...d }) : fresh();
+  d.settings = { ...fresh().settings, ...d.settings }; // new settings get their defaults
   // Done to-dos older than 30 days are cleared automatically
   const cutoff = ymd(addDays(new Date(), -30));
   d.todos = d.todos.filter(t => !(t.done && t.doneAt && t.doneAt < cutoff));
@@ -147,6 +150,9 @@ function setBgImage(file) {
 const sched = () => db.schedules.find(s => s.id === db.activeSchedule) || db.schedules[0];
 const classesOn = day => sched().classes.filter(c => +c.day === day).sort((a, b) => toMin(a.start) - toMin(b.start));
 const habitDone = (id, date) => (db.habitLog[date] || []).includes(id);
+// The holiday covering this date, if any; no classes are shown on holidays
+const holidayOn = ds => db.holidays.find(h => h.start <= ds && ds <= (h.end || h.start));
+const classesOnDate = ds => holidayOn(ds) ? [] : classesOn(parseYmd(ds).getDay());
 const curUni = () => find(db.unis, ui.pageId);
 
 function subjects() {
@@ -166,10 +172,9 @@ function colorOf(name) {
 }
 
 function nextClassDay(now) {
-  for (let i = 1; i <= 7; i++) {
-    const day = (now.getDay() + i) % 7;
-    const list = classesOn(day);
-    if (list.length) return { label: i === 1 ? "Tomorrow" : DAYS_FULL[day], c: list[0] };
+  for (let i = 1; i <= 60; i++) {
+    const d = addDays(now, i), list = classesOnDate(ymd(d));
+    if (list.length) return { label: i === 1 ? "Tomorrow" : i < 7 ? DAYS_FULL[d.getDay()] : fmtDate(ymd(d)), c: list[0] };
   }
   return null;
 }
@@ -217,12 +222,14 @@ function eventItem(e, ds) {
 // Everything on one day: events, exams, homework, to-dos, uni deadlines (and classes)
 function itemsOn(ds, withClasses) {
   const out = [];
+  const hol = holidayOn(ds);
+  if (hol) out.push({ title: "🏖️ " + hol.name, color: "#4CB800", act: "editHoliday", id: hol.id });
   db.events.filter(e => occursOn(e, ds)).forEach(e => out.push(eventItem(e, ds)));
   db.exams.filter(e => e.date === ds).forEach(e => out.push({ title: "Exam: " + e.name, color: "#E5484D", act: "editExam", id: e.id }));
   db.unis.filter(u => u.deadline === ds).forEach(u => out.push({ title: "Deadline: " + u.name, color: "#B48CDB", act: "openUni", id: u.id }));
   db.tasks.filter(t => t.due === ds).forEach(t => out.push({ title: t.title, color: colorOf(t.subject), act: "editTask", check: "toggleTask", id: t.id, done: t.done, tag: t.type }));
   db.todos.filter(t => t.date === ds).forEach(t => out.push({ title: t.text, color: PRIO_COLOR[t.priority || 0], act: "editTodo", check: "toggleTodo", id: t.id, done: t.done, prio: t.priority || 0 }));
-  if (withClasses) classesOn(parseYmd(ds).getDay()).forEach(c => out.push({ title: c.name, time: c.start, end: c.end, color: c.color, act: "editClass", id: c.id, tag: c.room, isClass: true }));
+  if (withClasses) classesOnDate(ds).forEach(c => out.push({ title: c.name, time: c.start, end: c.end, color: c.color, act: "editClass", id: c.id, tag: c.room, isClass: true }));
   return out.sort((a, b) => (a.done - b.done) || (a.time || "").localeCompare(b.time || "") || ((b.prio || 0) - (a.prio || 0)));
 }
 
@@ -279,11 +286,20 @@ const checkItem = (it, i) => `
 
 const empty = text => `<p class="empty">${text}</p>`;
 
+// Today's focus minutes with a progress bar towards the daily goal
+function goalBlock(min) {
+  const goal = db.settings.goal || 0;
+  if (!goal) return `<p class="big">${fmtMin(min)}</p>`;
+  return `<p class="big">${fmtMin(min)} <small class="muted">/ ${fmtMin(goal)}</small></p>
+    <div class="meter"><i style="width:${Math.min(100, (min / goal) * 100)}%;background:${min >= goal ? "var(--ok)" : "var(--accent)"}"></i></div>
+    <p class="small ${min >= goal ? "" : "muted"}">${min >= goal ? "🎉 Goal reached!" : `${fmtMin(goal - min)} to go`}</p>`;
+}
+
 // ===== Pages =====
 const VIEWS = {
   today() {
     const now = new Date(), nm = now.getHours() * 60 + now.getMinutes(), td = ymd(now);
-    const list = classesOn(now.getDay());
+    const list = classesOnDate(td), hol = holidayOn(td);
     const cur = list.find(c => toMin(c.start) <= nm && nm < toMin(c.end));
     const coming = (cur ? [cur] : []).concat(list.filter(c => toMin(c.start) > nm));
     let classes;
@@ -292,7 +308,7 @@ const VIEWS = {
       if (coming.length > 3) classes += `<p class="muted small">${coming.length - 3} more</p>`;
     } else {
       const nx = nextClassDay(now);
-      classes = empty(list.length ? "Classes are over for today 🎉" : "No classes today 😴") +
+      classes = empty(hol ? `${esc(hol.name)} — no classes 🏖️` : list.length ? "Classes are over for today 🎉" : "No classes today 😴") +
         (nx ? `<p class="muted small center">${nx.label} ${nx.c.start} ${esc(nx.c.name)}</p>` : "");
     }
 
@@ -326,14 +342,18 @@ const VIEWS = {
           <div class="muted small">${esc(exam.name)} · ${fmtDate(exam.date)}</div></section>` : "",
       habits: db.habits.length ? `<section class="card"><h2>Today's habits <a data-act="open" data-id="habits">All ›</a></h2>
           <div class="chips">${db.habits.map(h => `<button class="chip ${habitDone(h.id, td) ? "on" : ""}" data-act="toggleHabit" data-id="${h.id}|${td}">${esc(h.icon)} ${esc(h.name)}</button>`).join("")}</div></section>` : "",
-      focus: `<section class="card" data-act="tab" data-id="focus"><h2>Focus today</h2><p class="big">${fmtMin(focusMin)}</p></section>`,
+      focus: `<section class="card" data-act="tab" data-id="focus"><h2>Focus today</h2>${goalBlock(focusMin)}</section>`,
     };
     const shown = homeOrder().map(k => cards[k] || "").join("");
+    const quick = `<section class="card quick">
+        <form class="inline" data-form="quickAdd"><input name="text" data-input="quick" placeholder="Quick add: Math quiz fri 3pm" autocomplete="off" autocapitalize="off"><button class="btn">＋</button></form>
+        <div id="quickPreview" class="small muted">Try: <i>dentist tmr 4pm</i> · <i>hw physics lab report fri</i> · <i>piano every mon 6pm</i></div></section>`;
 
     return {
       title: `${DAYS_FULL[now.getDay()]}, ${MONTHS[now.getMonth()]} ${now.getDate()}`,
       html: `
         ${needBackup ? `<div class="banner" data-act="open" data-id="settings">💾 ${db.lastBackup ? "No backup in over 2 weeks" : "Never backed up"} — turn on cloud sync ›</div>` : ""}
+        ${quick}
         ${shown || `<section class="card">${empty("All home cards are turned off<br>Turn them on in More → Appearance")}</section>`}`,
     };
   },
@@ -469,6 +489,14 @@ const VIEWS = {
     const max = rows.length ? rows[0][1] : 1;
     const recent = [...db.focus].reverse().slice(0, 5);
     const subjectList = subjects();
+    // This week's minutes per day (Mon–Sun) for the chart
+    const week = [...Array(7)].map((_, i) => { const ds = ymd(addDays(parseYmd(monday), i)); return { ds, min: sumBy(db.focus.filter(f => f.date === ds), "minutes") }; });
+    const goal = db.settings.goal || 0;
+    const top = Math.max(goal, ...week.map(w => w.min), 1) * 1.1;
+    const chart = `<div class="wbars">${goal ? `<div class="wgoal" style="bottom:${(goal / top) * 100}%"></div>` : ""}
+        ${week.map(w => `<i class="${w.ds === td ? "today" : ""} ${goal && w.min >= goal ? "met" : ""}" style="height:${(w.min / top) * 100}%"></i>`).join("")}</div>
+      <div class="wlabels">${week.map(w => `<span class="${w.ds === td ? "on" : ""}">${DAYS[parseYmd(w.ds).getDay()]}</span>`).join("")}</div>
+      <p class="small muted">${goal ? `Goal reached on ${week.filter(w => w.min >= goal).length} of 7 days · dashed line = ${fmtMin(goal)} goal` : "Set a daily goal in Settings to see the goal line"}</p>`;
     const pick = subjectList.includes(ui.lastSubject) ? ui.lastSubject : subjectList[0];
 
     const control = t
@@ -484,7 +512,8 @@ const VIEWS = {
       action: `<button class="txt" data-act="focusSettings">Settings</button>`,
       html: `
         <section class="card focus-card"><div id="clock" class="clock">${clockText()}</div>${control}</section>
-        <section class="card"><h2>Today</h2><p class="big">${fmtMin(sumBy(db.focus.filter(f => f.date === td), "minutes"))}</p></section>
+        <section class="card"><h2>Today</h2>${goalBlock(sumBy(db.focus.filter(f => f.date === td), "minutes"))}</section>
+        <section class="card"><h2>This week <span>${fmtMin(sumBy(week, "min"))}</span></h2>${chart}</section>
         <section class="card"><h2>This week by subject <span>${fmtMin(rows.reduce((s, r) => s + r[1], 0))}</span></h2>
           ${rows.map(([s, m]) => `<div class="barrow"><div class="small"><b>${esc(s)}</b> <span class="muted">${fmtMin(m)}</span></div>
             <div class="meter"><i style="width:${(m / max) * 100}%;background:${esc(colorOf(s))}"></i></div></div>`).join("") || empty("Nothing recorded this week")}
@@ -500,6 +529,8 @@ const VIEWS = {
     const monthOut = sumBy(db.money.filter(x => x.type === "out" && x.date.startsWith(ymd().slice(0, 7))), "amount");
     const items = [
       ["schedule", "📚", "Timetable", sched().name],
+      ["holidays", "🏖️", "Holidays", (() => { const h = [...db.holidays].filter(x => (x.end || x.start) >= ymd()).sort((a, b) => a.start.localeCompare(b.start))[0]; return h ? `Next: ${h.name} · ${fmtDate(h.start)}` : "No holidays added"; })()],
+      ["reminders", "🔔", "Reminders", db.settings.taskRemind ? `Homework & exams: evening before at ${db.settings.taskRemind}` : "Homework & exam reminders are off"],
       ["exams", "⏰", "Exam countdown", exam ? `${exam.name} in ${plural(daysUntil(exam.date), "day")}` : "No exams yet"],
       ["unis", "🎓", "Uni applications", `${db.unis.length} ${db.unis.length === 1 ? "university" : "universities"}`],
       ["money", "🐷", "Money", `Spent this month: ${money(monthOut)}`],
@@ -512,6 +543,37 @@ const VIEWS = {
       html: `<section class="card">${items.map(([id, ic, name, sub]) => `
         <div class="row" data-act="open" data-id="${id}"><span class="icon">${ic}</span>
           <div class="grow"><b>${name}</b><div class="muted small">${esc(sub)}</div></div><span class="muted">›</span></div>`).join("")}</section>`,
+    };
+  },
+
+  holidays() {
+    const list = [...db.holidays].sort((a, b) => b.start.localeCompare(a.start));
+    const td = ymd();
+    const row = h => `<div class="row" data-act="editHoliday" data-id="${h.id}">
+        <div class="grow"><b>🏖️ ${esc(h.name)}</b><div class="muted small">${fmtDate(h.start)}${h.end && h.end !== h.start ? " – " + fmtDate(h.end) : ""}</div></div>
+        ${h.start <= td && td <= (h.end || h.start) ? '<span class="pill now">Now</span>' : ""}</div>`;
+    const coming = list.filter(h => (h.end || h.start) >= td).reverse(), past = list.filter(h => (h.end || h.start) < td);
+    return {
+      title: "Holidays",
+      action: `<button data-act="addHoliday">＋</button>`,
+      html: `<section class="card">${coming.map(row).join("") || empty("No holidays yet — tap ＋ to add one<br>Classes are hidden on these days (app and widget)")}</section>
+        ${past.length ? `<section class="card"><h2>Past</h2>${past.map(row).join("")}</section>` : ""}`,
+    };
+  },
+
+  reminders() {
+    const on = sync && sync.token;
+    return {
+      title: "Reminders",
+      html: `
+        <section class="card"><h2>How it works</h2>
+          <p class="small">iPhone notifications are sent by your <b>Class Schedule</b> widget in Scriptable. It reads Tick's synced data and sets the reminders for the next 7 days.</p>
+          <p class="small muted">Needs: cloud sync on${on ? " ✅" : " ❌ (turn it on in Sync & backup)"}, the Class Schedule widget on your home screen, and notifications allowed for Scriptable. New reminders are picked up the next time the widget refreshes (usually within 15–30 min).</p></section>
+        <section class="card"><h2>Events</h2>
+          <p class="small muted">Choose a reminder for each event when you add or edit it (default: 30 min before).</p></section>
+        <section class="card"><h2>Homework & exams</h2>
+          <label class="field"><span>Remind me the evening before, at</span>
+            <select data-change="taskRemind">${TASK_REMIND_TIMES.map(([v, l]) => `<option value="${v}" ${v === (db.settings.taskRemind || "") ? "selected" : ""}>${l}</option>`).join("")}</select></label></section>`,
     };
   },
 
@@ -781,9 +843,10 @@ function eventForm(e, date) {
     { key: "start", label: "Start time (empty = all day)", type: "time" },
     { key: "end", label: "End time (multi-day = time it ends on the last day)", type: "time" },
     { key: "repeat", label: "Repeat", type: "select", options: REPEATS },
+    { key: "remind", label: "Reminder", type: "select", options: REMINDS },
     { key: "color", label: "Colour", type: "color" },
     { key: "note", label: "Note", type: "textarea" },
-  ], e || { date: date || ymd(), repeat: "none", color: PALETTE[8] }, v => {
+  ], e || { date: date || ymd(), repeat: "none", remind: "30", color: PALETTE[8] }, v => {
     // Start date changed but end date left alone: move the end date along with it
     if (!isNew && e.endDate && v.endDate === e.endDate && v.date !== e.date) v.endDate = ymd(addDays(parseYmd(e.endDate), daysBetween(e.date, v.date)));
     if (v.endDate && v.endDate < v.date) return "End date can't be before the start date";
@@ -818,7 +881,40 @@ function examForm(e) {
   ], e || {}, v => {
     if (isNew) db.exams.push({ id: uid(), ...v });
     else Object.assign(e, v);
-  }, isNew ? null : () => { db.exams = db.exams.filter(x => x !== e); });
+  }, isNew ? null : () => { db.exams = db.exams.filter(x => x !== e); },
+  !isNew && daysUntil(e.date) > 0 ? `<button type="button" class="btn wide" data-act="planRevision" data-id="${e.id}">📖 Plan revision</button>` : "");
+}
+
+// Spread revision topics as to-dos over the days before the exam
+function revisionForm(exam) {
+  form("Plan revision", [
+    { key: "topics", label: `Topics to revise for ${exam.name} (one per line)`, type: "textarea", required: true },
+    { key: "start", label: "Start revising on", type: "date", required: true },
+    { key: "review", label: "Day before the exam", type: "select", options: [["yes", "Full review"], ["no", "Topics as normal"]] },
+  ], { start: ymd(), review: "yes" }, v => {
+    const topics = v.topics.split("\n").map(t => t.trim()).filter(Boolean);
+    const last = ymd(addDays(parseYmd(exam.date), v.review === "yes" ? -2 : -1)); // last day for topics
+    const days = daysBetween(v.start, last) + 1;
+    if (!topics.length) return "Add at least one topic";
+    if (v.start >= exam.date) return "Start before the exam date";
+    if (days < 1) return "Not enough days — pick an earlier start date";
+    topics.forEach((t, i) => db.todos.push({ id: uid(), text: `📖 ${t} (${exam.name})`, date: ymd(addDays(parseYmd(v.start), Math.floor((i * days) / topics.length))), priority: 1, done: false }));
+    if (v.review === "yes") db.todos.push({ id: uid(), text: `📖 Full review (${exam.name})`, date: ymd(addDays(parseYmd(exam.date), -1)), priority: 2, done: false });
+    toast(`Added ${topics.length + (v.review === "yes" ? 1 : 0)} revision to-dos ✅`);
+  });
+}
+
+function holidayForm(h) {
+  const isNew = !h;
+  form(isNew ? "New holiday" : "Edit holiday", [
+    { key: "name", label: "Name", type: "text", required: true, ph: "e.g. Christmas break" },
+    { key: "start", label: "First day", type: "date", required: true },
+    { key: "end", label: "Last day (empty = one day)", type: "date" },
+  ], h || { start: ymd() }, v => {
+    if (v.end && v.end < v.start) return "Last day can't be before the first day";
+    if (isNew) db.holidays.push({ id: uid(), ...v });
+    else Object.assign(h, v);
+  }, isNew ? null : () => { db.holidays = db.holidays.filter(x => x !== h); });
 }
 
 function uniForm(u) {
@@ -1048,6 +1144,100 @@ function importData(text) {
   render(); toast("Import done ✅");
 }
 
+// ===== Quick add: "Math quiz fri 3pm" → event / to-do / homework =====
+// Rules: has a time or "every …" → event; "hw"/"homework"/"due" → homework; "todo" or nothing else → to-do
+const WEEKDAY_RE = "(sun(?:day)?|mon(?:day)?|tue(?:s|sday)?|wed(?:nesday)?|thu(?:r|rs|rsday)?|fri(?:day)?|sat(?:urday)?)";
+const MONTH_RE = "(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\\.?";
+const PRE = "(?:(?:on|by)\\s+)?";
+
+function parseQuick(text, now = new Date()) {
+  let s = " " + text + " ";
+  const take = re => { const m = s.match(re); if (m) s = s.replace(m[0], " "); return m; };
+  const today = parseYmd(ymd(now));
+  const inDays = n => ymd(addDays(today, n));
+  const weekday = (name, next) => {
+    const wd = DAYS.findIndex(d => d.toLowerCase() === name.slice(0, 3).toLowerCase());
+    const diff = (wd - today.getDay() + 7) % 7;
+    return inDays(next ? (diff === 0 ? 7 : diff + 7) : diff);
+  };
+  // "Nov 20" or "11/20": this year, or next year if that date has already passed
+  const monthDay = (mi, d) => {
+    let x = new Date(today.getFullYear(), mi, d);
+    if (x.getMonth() !== mi) return "";
+    if (x < today) x = new Date(today.getFullYear() + 1, mi, d);
+    return ymd(x);
+  };
+  const to24 = (h, m, p) => {
+    h = Number(h); m = Number(m || 0);
+    if (p) h = (h % 12) + (p.toLowerCase() === "pm" ? 12 : 0);
+    return h <= 23 && m <= 59 ? `${pad(h)}:${pad(m)}` : "";
+  };
+  const r = { kind: null, date: "", start: "", end: "", repeat: "none" };
+
+  if (take(/\b(?:hw|homework)\b/i)) r.kind = "task";
+  else if (take(/\bto-?do\b/i)) r.kind = "todo";
+  if (take(/\bdue\b/i)) r.kind = "task";
+
+  // Repeats
+  let m;
+  if ((m = take(new RegExp(`\\bevery\\s+${WEEKDAY_RE}\\b`, "i")))) { r.repeat = "weekly"; r.date = weekday(m[1]); }
+  else if (take(/\b(?:every\s*day|daily)\b/i)) r.repeat = "daily";
+  else if (take(/\b(?:every\s*week|weekly)\b/i)) r.repeat = "weekly";
+  else if (take(/\b(?:every\s*month|monthly)\b/i)) r.repeat = "monthly";
+  else if (take(/\b(?:every\s*year|yearly)\b/i)) r.repeat = "yearly";
+
+  // Times: "3-5pm", "15:00-17:00", "3pm", "3:30pm", "15:00"
+  if ((m = take(/\b(?:from\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\s*(?:-|–|to)\s*(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b/i))) {
+    let p1 = m[3] || m[6];
+    if (!m[3] && to24(m[1], m[2], p1) > to24(m[4], m[5], m[6])) p1 = "am"; // "11-1pm" = 11am to 1pm
+    r.start = to24(m[1], m[2], p1); r.end = to24(m[4], m[5], m[6]);
+  } else if ((m = take(/\b(?:from\s+)?(\d{1,2}):(\d{2})\s*(?:-|–|to)\s*(\d{1,2}):(\d{2})\b/))) {
+    r.start = to24(m[1], m[2]); r.end = to24(m[3], m[4]);
+  } else if ((m = take(/\b(?:at\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b/i)) || (m = take(/\b(?:at\s+)?(\d{1,2}):(\d{2})\b/))) {
+    r.start = to24(m[1], m[2], m[3]);
+  }
+
+  // Dates
+  if (take(new RegExp(`\\b${PRE}(?:today|tdy|tonight)\\b`, "i"))) r.date = inDays(0);
+  else if (take(new RegExp(`\\b${PRE}(?:tomorrow|tmrw|tmr|tmw)\\b`, "i"))) r.date = inDays(1);
+  else if ((m = take(/\bin\s+(\d{1,3})\s+days?\b/i))) r.date = inDays(Number(m[1]));
+  else if ((m = take(new RegExp(`\\b${PRE}(next\\s+)?${WEEKDAY_RE}\\b`, "i")))) r.date = weekday(m[2], !!m[1]);
+  else if ((m = take(new RegExp(`\\b${PRE}${MONTH_RE}\\s+(\\d{1,2})(?:st|nd|rd|th)?\\b`, "i")))) r.date = monthDay(MONTHS.findIndex(x => x.toLowerCase() === m[1].toLowerCase()), Number(m[2]));
+  else if ((m = take(new RegExp(`\\b${PRE}(\\d{1,2})(?:st|nd|rd|th)?\\s+${MONTH_RE}\\b`, "i")))) r.date = monthDay(MONTHS.findIndex(x => x.toLowerCase() === m[2].toLowerCase()), Number(m[1]));
+  else if ((m = take(/\b(?:(?:on|by)\s+)?(\d{1,2})\/(\d{1,2})\b/))) r.date = monthDay(Number(m[1]) - 1, Number(m[2]));
+
+  r.title = s.replace(/\s+/g, " ").trim().replace(/^(?:on|at|by|for)\s+|\s+(?:on|at|by|for)$/gi, "").trim();
+  if (!r.title) return null;
+  if (!r.kind) r.kind = r.start || r.repeat !== "none" ? "event" : "todo";
+  if (r.kind === "event") r.date ||= inDays(0);
+  if (r.kind === "todo") r.date ||= inDays(0);
+  if (r.kind === "task") {
+    r.date ||= inDays(7);
+    // Subject: a timetable subject whose first word is in the text ("physics" → "Physics HL")
+    const low = text.toLowerCase();
+    r.subject = subjects().find(x => x !== "Other" && new RegExp(`\\b${x.split(" ")[0].toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`).test(low)) || "Other";
+  }
+  return r;
+}
+
+function quickText(q) {
+  if (!q) return "Type something like <i>dentist tmr 4pm</i>";
+  const kind = { event: "📅 Event", todo: "✅ To-do", task: "📝 Homework" }[q.kind];
+  const time = q.start ? ` · ${q.start}${q.end ? "–" + q.end : ""}` : "";
+  const rep = q.repeat !== "none" ? ` · 🔁 ${REPEATS.find(x => x[0] === q.repeat)[1].toLowerCase()}` : "";
+  return `${kind}: <b>${esc(q.title)}</b> · ${q.kind === "task" ? "due " : ""}${fmtDate(q.date)}${time}${rep}${q.subject ? " · " + esc(q.subject) : ""}`;
+}
+
+function quickAdd(f) {
+  const q = parseQuick(f.elements.text.value);
+  if (!q) return;
+  if (q.kind === "event") db.events.push({ id: uid(), title: q.title, date: q.date, endDate: "", start: q.start, end: q.start ? q.end : "", repeat: q.repeat, remind: "30", color: PALETTE[8], note: "" });
+  else if (q.kind === "task") db.tasks.push({ id: uid(), title: q.title, subject: q.subject, type: "Homework", due: q.date, note: "", done: false });
+  else db.todos.push({ id: uid(), text: q.title, date: q.date, priority: 0, note: "", done: false });
+  save(); render();
+  toast("Added ✅ " + quickText(q).replace(/<[^>]+>/g, ""));
+}
+
 // ===== Swipe left / right =====
 // On the month grid: change month. In Lists: To-dos ↔ Homework first. Anywhere else: next/previous tab.
 // Inside a sub-page: swipe right = back.
@@ -1188,17 +1378,22 @@ const ACT = {
   startBreak: () => startTimer("break"),
   stopTimer: () => endTimer(true, false),
   cancelTimer: () => { if (confirm("Give up this session? The time won't be saved.")) endTimer(false, false); },
-  focusSettings: () => form("Timer length", [
+  focusSettings: () => form("Focus settings", [
     { key: "work", label: "Focus (minutes)", type: "number", required: true },
     { key: "brk", label: "Break (minutes)", type: "number", required: true },
+    { key: "goal", label: "Daily goal (minutes, 0 = no goal)", type: "number", required: true },
   ], db.settings, v => {
     if (!(v.work >= 1 && v.brk >= 1)) return "At least 1 minute";
-    Object.assign(db.settings, { work: Math.round(v.work), brk: Math.round(v.brk) });
+    if (!(v.goal >= 0)) return "Goal can't be negative";
+    Object.assign(db.settings, { work: Math.round(v.work), brk: Math.round(v.brk), goal: Math.round(v.goal) });
   }),
   delFocus: id => { if (confirm("Delete this session?")) { db.focus = db.focus.filter(f => f.id !== id); save(); render(); } },
 
   addExam: () => examForm(null),
   editExam: id => examForm(find(db.exams, id)),
+  planRevision: id => revisionForm(find(db.exams, id)),
+  addHoliday: () => holidayForm(null),
+  editHoliday: id => holidayForm(find(db.holidays, id)),
 
   addUni: () => uniForm(null),
   editUni: id => uniForm(find(db.unis, id)),
@@ -1258,6 +1453,7 @@ const ACT = {
 
 const SUBMIT = {
   modalForm: submitForm,
+  quickAdd,
   addTodo: f => {
     const text = f.elements.text.value.trim();
     if (!text) return;
@@ -1273,6 +1469,7 @@ const SUBMIT = {
 };
 
 const CHANGE = {
+  taskRemind: el => { db.settings.taskRemind = el.value; save(); toast(el.value ? `Reminders at ${el.value} the evening before 🔔` : "Homework & exam reminders off"); },
   switchSched: el => { db.activeSchedule = el.value; save(); render(); },
   bgCustom: el => { localStorage.removeItem(BG_KEY); db.settings.bgColor = el.value; save(); render(); },
   bgImage: el => { const file = el.files[0]; if (file) setBgImage(file); el.value = ""; },
@@ -1286,6 +1483,10 @@ document.addEventListener("click", e => {
   ACT[el.dataset.act](el.dataset.id, el);
 });
 document.addEventListener("submit", e => { e.preventDefault(); SUBMIT[e.target.dataset.form]?.(e.target); });
+// Quick add: show what will be created while typing
+document.addEventListener("input", e => {
+  if (e.target.dataset.input === "quick") $("#quickPreview").innerHTML = e.target.value.trim() ? quickText(parseQuick(e.target.value)) : "";
+});
 document.addEventListener("change", e => { const el = e.target.closest("[data-change]"); if (el) CHANGE[el.dataset.change](el); });
 document.addEventListener("visibilitychange", () => {
   if (document.hidden) { if (pushPending) { clearTimeout(pushTimer); runSync(push); } }
