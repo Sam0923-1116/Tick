@@ -347,7 +347,7 @@ const VIEWS = {
     const shown = homeOrder().map(k => cards[k] || "").join("");
     const quick = `<section class="card quick">
         <form class="inline" data-form="quickAdd"><input name="text" data-input="quick" placeholder="Quick add: Math quiz fri 3pm" autocomplete="off" autocapitalize="off"><button class="btn">＋</button></form>
-        <div id="quickPreview" class="small muted">Try: <i>dentist tmr 4pm</i> · <i>hw physics lab report fri</i> · <i>piano every mon 6pm</i></div></section>`;
+        <div id="quickPreview" class="small muted"></div></section>`;
 
     return {
       title: `${DAYS_FULL[now.getDay()]}, ${MONTHS[now.getMonth()]} ${now.getDate()}`,
@@ -1221,7 +1221,7 @@ function parseQuick(text, now = new Date()) {
 }
 
 function quickText(q) {
-  if (!q) return "Type something like <i>dentist tmr 4pm</i>";
+  if (!q) return "Add a name too";
   const kind = { event: "📅 Event", todo: "✅ To-do", task: "📝 Homework" }[q.kind];
   const time = q.start ? ` · ${q.start}${q.end ? "–" + q.end : ""}` : "";
   const rep = q.repeat !== "none" ? ` · 🔁 ${REPEATS.find(x => x[0] === q.repeat)[1].toLowerCase()}` : "";

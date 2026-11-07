@@ -1,5 +1,5 @@
 // 讓 App 離線也能打開：有網路時抓最新版本，沒網路時用存起來的版本
-const CACHE = "myhq-v10";
+const CACHE = "myhq-v11";
 const FILES = ["./", "index.html", "style.css", "app.js", "manifest.webmanifest", "icon-180.png", "icon-512.png"];
 
 self.addEventListener("install", e => {

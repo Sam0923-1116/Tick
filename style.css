@@ -27,8 +27,8 @@ body { overflow-x: hidden; }
 /* Quick add box on Today */
 .card.quick { padding: 10px 12px; }
 .card.quick form.inline { margin: 0; }
-#quickPreview { margin-top: 6px; min-height: 16px; line-height: 1.4; }
-#quickPreview i { font-style: normal; background: var(--field); border-radius: 5px; padding: 0 4px; }
+#quickPreview { line-height: 1.4; }
+#quickPreview:not(:empty) { margin-top: 6px; }
 
 /* Focus: this week's bar chart with a dashed goal line */
 .wbars { position: relative; height: 96px; display: flex; align-items: flex-end; gap: 8px; margin-top: 8px; }
