@@ -328,7 +328,7 @@ const VIEWS = {
   calendar() {
     const [y, m] = ui.calMonth.split("-").map(Number);
     const first = new Date(y, m - 1, 1);
-    const offset = (first.getDay() + 6) % 7; // 星期一開頭
+    const offset = first.getDay(); // 星期日開頭
     const daysInMonth = new Date(y, m, 0).getDate();
     const start = addDays(first, -offset);
     const td = ymd();
@@ -349,7 +349,7 @@ const VIEWS = {
       action: `<button class="txt" data-act="calToday">今天</button>`,
       html: `
         <div class="month"><button data-act="calMonth" data-id="-1">‹</button><b>${y} 年 ${m} 月</b><button data-act="calMonth" data-id="1">›</button></div>
-        <div class="cal-week">${WEEK_ORDER.map(i => `<span>${DAYS[i]}</span>`).join("")}</div>
+        <div class="cal-week">${DAYS.map(d => `<span>${d}</span>`).join("")}</div>
         <div class="cal">${cells.join("")}</div>
         <section class="card"><h2>${fmtDate(sel)}${sel === td ? " · 今天" : ""}</h2>
           ${others.map(itemRow).join("") || empty("這天沒有安排")}
