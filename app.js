@@ -607,7 +607,7 @@ const VIEWS = {
     const items = [
       ["schedule", "📚", "Timetable", sched().name],
       ["holidays", "🏖️", "Terms & holidays", termLabel(ymd()) || (() => { const h = [...db.holidays].filter(x => (x.end || x.start) >= ymd()).sort((a, b) => a.start.localeCompare(b.start))[0]; return h ? `Next holiday: ${h.name} · ${fmtDate(h.start)}` : "No terms or holidays added"; })()],
-      ["modules", "📘", "Modules & grades", (() => { const o = overallGrade(); return o ? `Overall ${pct(o.avg)}${gradeLabel(o.avg) ? " · " + (db.settings.gradeSystem === "gpa" ? "GPA " + o.gpa.toFixed(2) : gradeLabel(o.avg)) : ""}` : `${plural(db.modules.length, "module")}`; })()],
+      ["modules", "📘", "Modules, grades & people", (() => { const o = overallGrade(); return o ? `Overall ${pct(o.avg)}${gradeLabel(o.avg) ? " · " + (db.settings.gradeSystem === "gpa" ? "GPA " + o.gpa.toFixed(2) : gradeLabel(o.avg)) : ""}` : `${plural(db.modules.length, "module")}`; })()],
       ["docs", "🛂", "Documents & prep", (() => { const d = [...db.docs].sort((a, b) => a.expiry.localeCompare(b.expiry))[0]; return d ? `${d.name} expires ${fmtDate(d.expiry)}` : `Before you go: ${db.prep.filter(i => i.done).length}/${db.prep.length} done`; })()],
       ["reminders", "🔔", "Reminders", db.settings.taskRemind ? `Homework & exams: evening before at ${db.settings.taskRemind}` : "Homework & exam reminders are off"],
       ["exams", "⏰", "Exam countdown", exam ? `${exam.name} in ${plural(daysUntil(exam.date), "day")}` : "No exams yet"],
@@ -664,7 +664,7 @@ const VIEWS = {
             <i class="bar" style="background:${esc(colorOf(m.name))}"></i>
             <div class="grow"><b>${esc(m.name)}</b><div class="muted small">${m.credits ? m.credits + " credits · " : ""}${m.items.length ? `${scored(m).length}/${m.items.length} marked` : "No assessments yet"}</div></div>
             ${a != null ? `<div class="right"><b>${pct(a)}</b><div class="small muted">${gradeLabel(a)}</div></div>` : ""}</div>`; }).join("")
-          || empty("No modules yet — tap ＋ at the top right<br>Add your courses, their assessments and your marks")}</section>
+          || empty("No modules yet — tap ＋ at the top right<br>Each module has its assessments & marks,<br>plus People (lecturers, email, office hours)")}</section>
         <section class="card"><h2>Grading system</h2>
           <select data-change="gradeSystem">${GRADE_SYSTEMS.map(([v, l]) => `<option value="${v}" ${v === sys ? "selected" : ""}>${l}</option>`).join("")}</select></section>`,
     };
