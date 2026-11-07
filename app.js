@@ -19,7 +19,10 @@ const UNI_ITEMS = ["Personal statement / Essay", "Reference letter", "Transcript
 const MONEY_CATS = ["Food", "Groceries", "Rent", "Bills", "Transport", "Study", "Fun", "Shopping", "Living", "Allowance", "Part-time job", "Other"];
 const CURRENCIES = ["$", "NT$", "£", "US$", "C$", "€"];
 const CLASS_KINDS = [["", "—"], ["Lecture", "Lecture"], ["Tutorial", "Tutorial"], ["Lab", "Lab"], ["Seminar", "Seminar"], ["Workshop", "Workshop"]];
-const GRADE_SYSTEMS = [["uk", "UK (First, 2:1, 2:2…)"], ["gpa", "US / Canada GPA (4.0)"], ["pct", "Percentage only"]];
+const GRADE_SYSTEMS = [["ib", "IB Diploma (1–7, out of 45)"], ["uk", "UK (First, 2:1, 2:2…)"], ["gpa", "US / Canada GPA (4.0)"], ["pct", "Percentage only"]];
+const CORE_GRADES = [["", "—"], ["A", "A"], ["B", "B"], ["C", "C"], ["D", "D"], ["E", "E"]];
+// IB core points from TOK + EE grades (any E = fail)
+const CORE_POINTS = { AA: 3, AB: 3, AC: 2, AD: 2, BB: 2, BC: 2, BD: 1, CC: 1, CD: 0, DD: 0 };
 const PEOPLE_ROLES = ["Lecturer", "Professor", "Tutor", "TA", "Advisor", "Other"];
 const DOC_NAMES = ["Passport", "Visa / BRP / eVisa", "Student insurance", "Accommodation contract", "CAS / I-20", "Driving licence"];
 const PREP_ITEMS = ["CAS / I-20 received", "Visa approved", "Flights booked", "Accommodation sorted", "Health insurance / IHS", "Open a bank account",
@@ -28,9 +31,10 @@ const HOME_TZ = "Asia/Taipei"; // shown on Today when you're in a different time
 const PRIORITIES = [[0, "None"], [1, "Low"], [2, "Medium"], [3, "High"]];
 const PRIO_COLOR = ["#8E8E93", "#4C8BF5", "#E08A00", "#E5484D"];
 const BG_KEY = "myhq-bg"; // background photo is only kept on this phone
-const HOME_CARDS = [["classes", "📚 Classes"], ["agenda", "📆 Today's events"], ["todos", "✅ Today's to-dos"], ["tasks", "📝 Homework due soon"],
+const HOME_CARDS = [["classes", "📚 Classes"], ["agenda", "📆 Today's events"], ["week", "🗓️ Next 7 days"], ["todos", "✅ Today's to-dos"], ["tasks", "📝 Homework due soon"],
   ["exam", "⏳ Exam countdown"], ["habits", "💧 Today's habits"], ["focus", "⏱️ Focus today"]];
-const HOME_DEFAULT = ["classes", "agenda", "tasks", "exam", "focus"];
+const HOME_DEFAULT = ["classes", "agenda", "week", "tasks", "exam", "focus"];
+const NEW_CARDS = ["week"]; // cards added after launch: shown once to people with a custom home layout
 const BG_COLORS = ["#FDE2E4", "#FFF1C1", "#E2F0CB", "#DFE7FD", "#E8DFF5", "#D9F2F2", "#2B2D42", "#0B3D2E"];
 const REPEATS = [["none", "Never"], ["daily", "Every day"], ["weekly", "Every week"], ["monthly", "Every month"], ["yearly", "Every year"]];
 const REMINDS = [["", "No reminder"], ["0", "At start time (8:00 if all day)"], ["10", "10 min before"], ["30", "30 min before"], ["60", "1 hour before"], ["1440", "1 day before"]];
@@ -79,12 +83,23 @@ function dueLabel(s) {
   return `<span class="${n <= 3 ? "soon" : "muted small"}">${n} days left</span>`;
 }
 
-function toast(msg) {
+// Short message at the bottom; with undo it gets an "Undo" button and stays a bit longer
+function toast(msg, undo) {
   const el = $("#toast");
-  el.textContent = msg;
+  el.innerHTML = esc(msg) + (undo ? ' <button data-act="undo">Undo</button>' : "");
+  el.classList.toggle("has-undo", !!undo);
+  toast.undo = undo || null;
   el.classList.add("show");
   clearTimeout(toast.t);
-  toast.t = setTimeout(() => el.classList.remove("show"), 2400);
+  toast.t = setTimeout(() => { el.classList.remove("show", "has-undo"); toast.undo = null; }, undo ? 5000 : 2400);
+}
+
+// Take a copy of all data before deleting, so "Undo" can put it back
+const undoTo = snap => () => { db = JSON.parse(snap); save(); render(); toast("Restored ↩️"); };
+function deleteWithUndo(fn, msg = "Deleted") {
+  const snap = JSON.stringify(db);
+  fn(); save(); render();
+  toast(msg, undoTo(snap));
 }
 
 // ===== Data =====
@@ -94,7 +109,7 @@ function fresh() {
     version: 1, updatedAt: 0, schedules: [s], activeSchedule: s.id,
     tasks: [], todos: [], events: [], focus: [], exams: [], unis: [], money: [], habits: [], habitLog: {}, holidays: [],
     terms: [], modules: [], docs: [], recurring: [], prep: PREP_ITEMS.map(text => ({ text, done: false })),
-    settings: { work: 25, brk: 5, goal: 120, taskRemind: "20:00", currency: "$", budget: 0, gradeSystem: "uk" }, timer: null, lastBackup: null,
+    settings: { work: 25, brk: 5, goal: 120, taskRemind: "20:00", currency: "$", budget: 0, gradeSystem: "ib" }, timer: null, lastBackup: null,
   };
 }
 
@@ -106,6 +121,15 @@ function migrate(d) {
   d.money.forEach(x => { x.category = en(x.category); });
   d.focus.forEach(f => { f.subject = en(f.subject); });
   d.settings = { ...fresh().settings, ...d.settings }; // new settings get their defaults
+  // IB mode added: switch to it once if no modules exist yet (still in high school)
+  if (!d.settings.ibIntro) { if (!d.modules.length) d.settings.gradeSystem = "ib"; d.settings.ibIntro = true; }
+  // New home cards appear once for people who already arranged their home page
+  const seen = d.settings.cardsSeen || [];
+  if (d.settings.home) NEW_CARDS.filter(k => !seen.includes(k) && !d.settings.home.includes(k)).forEach(k => {
+    const i = d.settings.home.indexOf("agenda");
+    d.settings.home.splice(i >= 0 ? i + 1 : 1, 0, k);
+  });
+  d.settings.cardsSeen = [...new Set([...seen, ...NEW_CARDS])];
   return d;
 }
 
@@ -136,6 +160,13 @@ function applyTheme() {
   bg.style.backgroundImage = img ? `url(${img})` : "none";
   bg.style.backgroundColor = !img && s.bgColor ? s.bgColor : "transparent";
   document.body.classList.toggle("custom-bg", !!(img || s.bgColor));
+  // Light background colour → keep dark text on it; dark colour or photo → white text
+  document.body.classList.toggle("bg-light", !img && !!s.bgColor && isLight(s.bgColor));
+}
+
+function isLight(hex) {
+  const n = parseInt(hex.replace("#", ""), 16), r = n >> 16, g = (n >> 8) & 255, b = n & 255;
+  return 0.299 * r + 0.587 * g + 0.114 * b > 160;
 }
 
 // Shrink the photo before saving it (phone photos are too big for localStorage)
@@ -216,6 +247,15 @@ function gradeLabel(p) {
   return "";
 }
 const pct = p => (Math.round(p * 10) / 10) + "%";
+// IB: subject grades (1–7) + core points (TOK/EE), out of 45
+function ibTotal() {
+  const graded = db.modules.filter(m => Number(m.ib) >= 1);
+  const { ibTok: t, ibEe: e } = db.settings;
+  const core = !t || !e ? null : t === "E" || e === "E" ? -1 : CORE_POINTS[[t, e].sort().join("")];
+  const subjects = graded.reduce((s, m) => s + Number(m.ib), 0);
+  return { subjects, n: graded.length, core, total: subjects + Math.max(core || 0, 0) };
+}
+
 // Overall: credit-weighted (GPA uses each module's grade points)
 function overallGrade() {
   const list = db.modules.map(m => ({ c: Number(m.credits) || 1, a: moduleAvg(m) })).filter(x => x.a != null);
@@ -419,18 +459,22 @@ const VIEWS = {
       habits: db.habits.length ? `<section class="card"><h2>Today's habits <a data-act="open" data-id="habits">All ›</a></h2>
           <div class="chips">${db.habits.map(h => `<button class="chip ${habitDone(h.id, td) ? "on" : ""}" data-act="toggleHabit" data-id="${h.id}|${td}">${esc(h.icon)} ${esc(h.name)}</button>`).join("")}</div></section>` : "",
       focus: `<section class="card" data-act="tab" data-id="focus"><h2>Focus today</h2>${goalBlock(focusMin)}</section>`,
+      week: (() => {
+        // Tomorrow + the 6 days after: only days with something on, max 4 items each
+        const days = [...Array(7)].map((_, i) => ymd(addDays(now, i + 1))).map(ds => ({ ds, items: itemsOn(ds, false).filter(it => !it.done) })).filter(d => d.items.length);
+        return `<section class="card"><h2>Next 7 days <a data-act="tab" data-id="calendar">Calendar ›</a></h2>
+          ${days.map(d => `<h3 class="date">${daysUntil(d.ds) === 1 ? "Tomorrow" : fmtDate(d.ds)}</h3>${d.items.slice(0, 4).map(itemRow).join("")}
+            ${d.items.length > 4 ? `<p class="muted small">+${d.items.length - 4} more</p>` : ""}`).join("") || empty("Nothing planned this week 🎉")}</section>`;
+      })(),
     };
     const shown = homeOrder().map(k => cards[k] || "").join("");
-    const quick = `<section class="card quick">
-        <form class="inline" data-form="quickAdd"><input name="text" data-input="quick" placeholder="Quick add: Math quiz fri 3pm" autocomplete="off" autocapitalize="off"><button class="btn">＋</button></form>
-        <div id="quickPreview" class="small muted"></div></section>`;
 
     return {
       title: `${DAYS_FULL[now.getDay()]}, ${MONTHS[now.getMonth()]} ${now.getDate()}`,
+      action: `<button class="icon-btn" data-act="openSearch" aria-label="Search">🔍</button>`,
       html: `
         ${needBackup ? `<div class="banner" data-act="open" data-id="settings">💾 ${db.lastBackup ? "No backup in over 2 weeks" : "Never backed up"} — turn on cloud sync ›</div>` : ""}
         ${termLabel(td) || homeTime() ? `<p class="topline">${[termLabel(td) && "📆 " + termLabel(td), `<span id="homeClock">${homeTime()}</span>`].filter(Boolean).join(" · ")}</p>` : ""}
-        ${quick}
         ${shown || `<section class="card">${empty("All home cards are turned off<br>Turn them on in More → Appearance")}</section>`}`,
     };
   },
@@ -612,7 +656,9 @@ const VIEWS = {
       ["School", [
         ["schedule", "📚", "120,170,255", "Timetable", sched().name],
         ["holidays", "🏖️", "120,220,160", "Terms & holidays", termLabel(ymd()) || (nextHol ? `Next: ${nextHol.name}` : "None yet")],
-        ["modules", "📘", "110,210,230", "Modules & grades", o ? `Overall ${db.settings.gradeSystem === "gpa" ? "GPA " + o.gpa.toFixed(2) : pct(o.avg)}` : "Marks, lecturers, office hours"],
+        ["modules", "📘", "110,210,230", db.settings.gradeSystem === "ib" ? "IB grades & subjects" : "Modules & grades",
+          db.settings.gradeSystem === "ib" ? (db.modules.length ? `IB total ${ibTotal().total} / 45` : "Grades, TOK/EE, teachers")
+          : o ? `Overall ${db.settings.gradeSystem === "gpa" ? "GPA " + o.gpa.toFixed(2) : pct(o.avg)}` : "Marks, lecturers, office hours"],
         ["exams", "⏰", "255,196,77", "Exam countdown", exam ? `${exam.name} in ${plural(daysUntil(exam.date), "day")}` : "No exams yet"],
       ]],
       ["Uni & abroad", [
@@ -634,6 +680,14 @@ const VIEWS = {
       html: groups.map(([g, rows]) => `<h3 class="group">${g}</h3><section class="card">${rows.map(([id, ic, rgb, name, sub]) => `
         <div class="row" data-act="open" data-id="${id}"><span class="icon" style="background:rgba(${rgb},.25)">${ic}</span>
           <div class="grow"><b>${name}</b><div class="muted small">${esc(sub)}</div></div><span class="muted">›</span></div>`).join("")}</section>`).join(""),
+    };
+  },
+
+  search() {
+    return {
+      title: "Search",
+      html: `<input id="searchBox" class="search" type="search" data-input="search" value="${esc(ui.query || "")}" placeholder="Events, to-dos, homework, people…" autocomplete="off" autocapitalize="off">
+        <div id="results">${searchResults(ui.query || "")}</div>`,
     };
   },
 
@@ -663,19 +717,33 @@ const VIEWS = {
   },
 
   modules() {
-    const o = overallGrade(), sys = db.settings.gradeSystem;
+    const o = overallGrade(), sys = db.settings.gradeSystem, ib = sys === "ib";
+    const s = db.settings, it = ib && ibTotal(), target = Number(s.ibTarget) || 0;
+    const sel = (key, opts) => `<select data-change="ibSetting" data-key="${key}">${opts.map(([v, l]) => `<option value="${v}" ${v === (s[key] || "") ? "selected" : ""}>${l}</option>`).join("")}</select>`;
+    const ibCards = ib ? `
+        <section class="card"><h2>IB total <span>${it.n}/6 subjects graded</span></h2>
+          <p class="big">${it.total} <small class="muted">/ 45</small></p>
+          <p class="small muted">Subjects ${it.subjects}${it.core == null ? " · add TOK & EE grades below" : it.core < 0 ? " · ⚠️ an E in TOK or EE fails the diploma" : ` + core ${it.core}`}</p>
+          ${target ? `<p class="small">${it.total >= target ? `🎉 On target (${target})` : `<b>${target - it.total}</b> more points needed for ${target}`}</p>` : ""}</section>
+        <section class="card"><h2>Core & target</h2>
+          <div class="core-grid"><label>TOK ${sel("ibTok", CORE_GRADES)}</label><label>EE ${sel("ibEe", CORE_GRADES)}</label>
+            <label>Target ${sel("ibTarget", [["", "—"], ...[...Array(22)].map((_, i) => [String(45 - i), String(45 - i)])])}</label></div>
+          <p class="small muted">Set each subject's IB grade (1–7) inside the subject. Target = your offer, e.g. 36.</p></section>` : "";
     return {
-      title: "Modules & grades",
+      title: ib ? "IB subjects & grades" : "Modules & grades",
       action: `<button data-act="addModule">＋</button>`,
       html: `
-        ${o ? `<section class="card"><h2>Overall <span>${plural(o.n, "module")} with marks</span></h2>
+        ${ibCards}
+        ${ib && !db.modules.length ? `<button class="btn wide primary" data-act="importIB">📚 Add my subjects from the timetable</button>` : ""}
+        ${!ib && o ? `<section class="card"><h2>Overall <span>${plural(o.n, "module")} with marks</span></h2>
           <p class="big">${sys === "gpa" ? "GPA " + o.gpa.toFixed(2) : pct(o.avg)} <small class="muted">${sys === "gpa" ? pct(o.avg) : gradeLabel(o.avg)}</small></p>
           <p class="small muted">Weighted by credits.</p></section>` : ""}
         <section class="card">${db.modules.map(m => { const a = moduleAvg(m); return `
           <div class="row" data-act="openModule" data-id="${m.id}">
             <i class="bar" style="background:${esc(colorOf(m.name))}"></i>
             <div class="grow"><b>${esc(m.name)}</b><div class="muted small">${m.credits ? m.credits + " credits · " : ""}${m.items.length ? `${scored(m).length}/${m.items.length} marked` : "No assessments yet"}</div></div>
-            ${a != null ? `<div class="right"><b>${pct(a)}</b><div class="small muted">${gradeLabel(a)}</div></div>` : ""}</div>`; }).join("")
+            ${ib ? `<div class="right"><b class="ibgrade">${m.ib || "—"}</b><div class="small muted">${esc(m.level || "")}</div></div>`
+              : a != null ? `<div class="right"><b>${pct(a)}</b><div class="small muted">${gradeLabel(a)}</div></div>` : ""}</div>`; }).join("")
           || empty("No modules yet — tap ＋ at the top right<br>Each module has its assessments & marks,<br>plus People (lecturers, email, office hours)")}</section>
         <section class="card"><h2>Grading system</h2>
           <select data-change="gradeSystem">${GRADE_SYSTEMS.map(([v, l]) => `<option value="${v}" ${v === sys ? "selected" : ""}>${l}</option>`).join("")}</select></section>`,
@@ -692,7 +760,9 @@ const VIEWS = {
       title: m.name,
       action: `<button class="txt" data-act="editModule" data-id="${m.id}">Edit</button>`,
       html: `
-        <section class="card"><h2>Current mark ${m.credits ? `<span>${m.credits} credits</span>` : ""}</h2>
+        ${db.settings.gradeSystem === "ib" ? `<section class="card" data-act="editModule" data-id="${m.id}"><h2>IB grade <span>${esc(m.level || "")}</span></h2>
+          <p class="big">${m.ib || "—"} <small class="muted">/ 7</small></p><p class="small muted">Tap to change</p></section>` : ""}
+        <section class="card"><h2>${db.settings.gradeSystem === "ib" ? "Assessment average" : "Current mark"} ${m.credits ? `<span>${m.credits} credits</span>` : ""}</h2>
           <p class="big">${a != null ? pct(a) : "—"} <small class="muted">${gradeLabel(a)}</small></p>
           ${needText ? `<p class="small">${needText}</p>` : ""}
           ${totalW && totalW !== 100 ? `<p class="small late">Weights add up to ${totalW}%, not 100%</p>` : ""}</section>
@@ -883,6 +953,7 @@ function render() {
   $("#back").hidden = !ui.page;
   $("#topAction").innerHTML = v.action || "";
   $("#view").innerHTML = v.html;
+  $("#fab").hidden = !(ui.tab === "today" && !ui.page);
   document.querySelectorAll("#tabs button").forEach(b => b.classList.toggle("on", b.dataset.tab === ui.tab));
   applyTheme();
 }
@@ -951,10 +1022,11 @@ async function submitForm() {
 }
 
 function deleteForm() {
-  if (!confirm("Delete this?")) return;
+  const snap = JSON.stringify(db);
   const res = formState.onDelete();
   if (res) return toast(res);
   save(); closeModal(); render();
+  toast("Deleted", undoTo(snap));
 }
 
 function classForm(c) {
@@ -1101,13 +1173,16 @@ function termForm(t) {
 }
 
 function moduleForm(m) {
-  const isNew = !m;
-  form(isNew ? "New module" : "Edit module", [
-    { key: "name", label: "Module", type: "text", required: true, ph: "e.g. Linear Algebra" },
-    { key: "credits", label: "Credits (for the overall average)", type: "number", optional: true, ph: "e.g. 15" },
+  const isNew = !m, ib = db.settings.gradeSystem === "ib";
+  form(isNew ? (ib ? "New subject" : "New module") : (ib ? "Edit subject" : "Edit module"), [
+    { key: "name", label: ib ? "Subject" : "Module", type: "text", required: true, ph: ib ? "e.g. Physics HL" : "e.g. Linear Algebra" },
+    ...(ib ? [
+      { key: "level", label: "Level", type: "select", options: ["HL", "SL"] },
+      { key: "ib", label: "IB grade (predicted or latest)", type: "select", options: [["", "—"], ...[7, 6, 5, 4, 3, 2, 1].map(n => [String(n), String(n)])] },
+    ] : [{ key: "credits", label: "Credits (for the overall average)", type: "number", optional: true, ph: "e.g. 15" }]),
     { key: "target", label: "Target mark (%)", type: "number", required: true },
     { key: "link", label: "Course page link (Moodle / Canvas…)", type: "url", ph: "https://" },
-  ], m || { target: 70 }, v => {
+  ], m || { target: 70, level: "HL" }, v => {
     if (isNew) { const x = { id: uid(), items: [], people: [], ...v }; db.modules.push(x); ui.pageId = x.id; ui.page = "module"; }
     else Object.assign(m, v);
   }, isNew ? null : () => { db.modules = db.modules.filter(x => x !== m); ui.page = "modules"; });
@@ -1522,13 +1597,53 @@ function quickText(q) {
   return `${kind}: <b>${esc(q.title)}</b> · ${q.kind === "task" ? "due " : ""}${fmtDate(q.date)}${time}${rep}${q.subject ? " · " + esc(q.subject) : ""}`;
 }
 
+// ===== Search everything =====
+function searchResults(q) {
+  q = q.trim().toLowerCase();
+  if (!q) return `<p class="empty">Type to search everything in Tick</p>`;
+  const has = (...xs) => xs.some(x => String(x || "").toLowerCase().includes(q));
+  const res = []; // [icon, title, note, act, id]
+  db.events.filter(e => has(e.title, e.note)).forEach(e => res.push(["📅", e.title, fmtDate(e.date) + (e.start ? " " + e.start : ""), "editEvent", e.id]));
+  db.todos.filter(t => has(t.text, t.note)).forEach(t => res.push([t.done ? "☑️" : "✅", t.text, t.date ? fmtDate(t.date) : "No date", "editTodo", t.id]));
+  db.tasks.filter(t => has(t.title, t.subject, t.note)).forEach(t => res.push(["📝", t.title, `${t.subject}${t.due ? " · due " + fmtDate(t.due) : ""}`, "editTask", t.id]));
+  db.exams.filter(e => has(e.name, e.note)).forEach(e => res.push(["⏳", e.name, fmtDate(e.date), "editExam", e.id]));
+  sched().classes.filter(c => has(c.name, c.room)).forEach(c => res.push(["📚", c.name, `${DAYS_FULL[c.day]} ${c.start}`, "editClass", c.id]));
+  db.modules.filter(m => has(m.name, ...m.people.map(p => p.name))).forEach(m => res.push(["📘", m.name, m.people.map(p => p.name).join(", ") || "Module", "openModule", m.id]));
+  db.unis.filter(u => has(u.name, u.program, u.notes)).forEach(u => res.push(["🎓", u.name, u.program || u.status, "openUni", u.id]));
+  db.docs.filter(d => has(d.name, d.note)).forEach(d => res.push(["🛂", d.name, "Expires " + fmtDate(d.expiry), "editDoc", d.id]));
+  db.holidays.filter(h => has(h.name)).forEach(h => res.push(["🏖️", h.name, fmtDate(h.start), "editHoliday", h.id]));
+  db.money.filter(x => has(x.note, x.category)).forEach(x => res.push(["🐷", `${x.category} ${x.type === "in" ? "+" : "−"}${money(x.amount)}`, fmtDate(x.date) + (x.note ? " · " + x.note : ""), "editMoney", x.id]));
+  if (!res.length) return `<p class="empty">Nothing found for “${esc(q)}”</p>`;
+  return `<section class="card">${res.slice(0, 60).map(([ic, title, note, act, id]) => `
+    <div class="row" data-act="${act}" data-id="${id}"><span class="sicon">${ic}</span>
+      <div class="grow"><b>${esc(title)}</b><div class="muted small">${esc(note)}</div></div></div>`).join("")}</section>
+    ${res.length > 60 ? `<p class="muted small center">Showing 60 of ${res.length}</p>` : ""}`;
+}
+
+// ===== Quick add sheet (the round ＋ button on Today) =====
+function quickSheet() {
+  formState = null;
+  $("#modal").innerHTML = `
+    <div class="backdrop" data-act="closeModal"></div>
+    <div class="sheet">
+      <div class="sheet-head"><button type="button" data-act="closeModal">Cancel</button><b>Quick add</b>
+        <button type="button" class="strong" data-act="quickSubmit">Add</button></div>
+      <form data-form="quickAdd"><input id="quickInput" name="text" data-input="quick" placeholder="e.g. Math quiz fri 3pm" autocomplete="off" autocapitalize="off"></form>
+      <div id="quickPreview" class="small muted"></div>
+      <p class="small muted" style="margin:16px 0 0 4px">Or open the full form</p>
+      <div class="agenda-add"><button class="btn" data-act="addEvent">＋ Event</button><button class="btn" data-act="addTodo">＋ To-do</button><button class="btn" data-act="addTask">＋ Homework</button></div>
+    </div>`;
+  $("#modal").hidden = false;
+  $("#quickInput").focus();
+}
+
 function quickAdd(f) {
   const q = parseQuick(f.elements.text.value);
   if (!q) return;
   if (q.kind === "event") db.events.push({ id: uid(), title: q.title, date: q.date, endDate: "", start: q.start, end: q.start ? q.end : "", repeat: q.repeat, remind: "30", color: PALETTE[8], note: "" });
   else if (q.kind === "task") db.tasks.push({ id: uid(), title: q.title, subject: q.subject, type: "Homework", due: q.date, note: "", done: false });
   else db.todos.push({ id: uid(), text: q.title, date: q.date, priority: 0, repeat: q.repeat, note: "", done: false });
-  save(); render();
+  closeModal(); save(); render();
   toast("Added ✅ " + quickText(q).replace(/<[^>]+>/g, ""));
 }
 
@@ -1620,6 +1735,9 @@ const ACT = {
   open: id => { ui.page = id; render(); scrollTo(0, 0); slideIn(0); },
   back: () => { ui.page = { uni: "unis", module: "modules" }[ui.page] || null; render(); },
   closeModal, submitForm, deleteForm,
+  openSearch: () => { ui.query = ""; ACT.open("search"); $("#searchBox").focus(); },
+  quick: quickSheet,
+  quickSubmit: () => quickAdd($("#modal form")),
 
   goList: mode => { ui.listMode = mode; ACT.tab("list"); },
   listMode: mode => { ui.listMode = mode; ui.showDone = false; render(); },
@@ -1696,7 +1814,8 @@ const ACT = {
     if (!(v.goal >= 0)) return "Goal can't be negative";
     Object.assign(db.settings, { work: Math.round(v.work), brk: Math.round(v.brk), goal: Math.round(v.goal) });
   }),
-  delFocus: id => { if (confirm("Delete this session?")) { db.focus = db.focus.filter(f => f.id !== id); save(); render(); } },
+  delFocus: id => deleteWithUndo(() => { db.focus = db.focus.filter(f => f.id !== id); }),
+  undo: () => { if (toast.undo) toast.undo(); },
 
   addExam: () => examForm(null),
   editExam: id => examForm(find(db.exams, id)),
@@ -1707,6 +1826,14 @@ const ACT = {
   editTerm: id => termForm(find(db.terms, id)),
 
   addModule: () => moduleForm(null),
+  // IB: make a subject for each class in the timetable (skips TOK, PE, homeroom-type classes)
+  importIB: () => {
+    const have = new Set(db.modules.map(m => m.name));
+    const names = [...new Set(sched().classes.map(c => c.name))].filter(n => !have.has(n) && !/^(TOK|PE|Class Meeting|Homeroom|Assembly|CAS)$/i.test(n));
+    names.forEach(name => db.modules.push({ id: uid(), name, level: /\bHL\b/i.test(name) ? "HL" : "SL", ib: "", credits: "", target: 70, link: "", items: [], people: [] }));
+    save(); render();
+    toast(names.length ? `Added ${plural(names.length, "subject")} — tap each to set its grade` : "No new subjects found in the timetable");
+  },
   editModule: id => moduleForm(find(db.modules, id)),
   openModule: id => { ui.pageId = id; ui.page = "module"; render(); scrollTo(0, 0); },
   addAssess: () => assessForm(-1),
@@ -1717,7 +1844,7 @@ const ACT = {
   addDoc: () => docForm(null),
   editDoc: id => docForm(find(db.docs, id)),
   togglePrep: i => { const it = db.prep[Number(i)]; it.done = !it.done; save(); render(); },
-  delPrep: i => { db.prep.splice(Number(i), 1); save(); render(); },
+  delPrep: i => deleteWithUndo(() => { db.prep.splice(Number(i), 1); }),
 
   addRecurring: () => recurringForm(null),
   editRecurring: id => recurringForm(find(db.recurring, id)),
@@ -1733,7 +1860,7 @@ const ACT = {
   editUni: id => uniForm(find(db.unis, id)),
   openUni: id => { ui.pageId = id; ui.page = "uni"; render(); scrollTo(0, 0); },
   toggleItem: i => { const it = curUni().items[Number(i)]; it.done = !it.done; save(); render(); },
-  delItem: i => { curUni().items.splice(Number(i), 1); save(); render(); },
+  delItem: i => deleteWithUndo(() => { curUni().items.splice(Number(i), 1); }),
 
   month: n => {
     const [y, m] = ui.month.split("-").map(Number);
@@ -1810,6 +1937,7 @@ const SUBMIT = {
 
 const CHANGE = {
   gradeSystem: el => { db.settings.gradeSystem = el.value; save(); render(); },
+  ibSetting: el => { db.settings[el.dataset.key] = el.value; save(); render(); },
   taskRemind: el => { db.settings.taskRemind = el.value; save(); toast(el.value ? `Reminders at ${el.value} the evening before 🔔` : "Homework & exam reminders off"); },
   switchSched: el => { db.activeSchedule = el.value; save(); render(); },
   bgCustom: el => { localStorage.removeItem(BG_KEY); db.settings.bgColor = el.value; save(); render(); },
@@ -1827,6 +1955,7 @@ document.addEventListener("submit", e => { e.preventDefault(); SUBMIT[e.target.d
 // Quick add: show what will be created while typing
 document.addEventListener("input", e => {
   if (e.target.dataset.input === "quick") $("#quickPreview").innerHTML = e.target.value.trim() ? quickText(parseQuick(e.target.value)) : "";
+  if (e.target.dataset.input === "search") { ui.query = e.target.value; $("#results").innerHTML = searchResults(ui.query); }
 });
 document.addEventListener("change", e => { const el = e.target.closest("[data-change]"); if (el) CHANGE[el.dataset.change](el); });
 document.addEventListener("visibilitychange", () => {

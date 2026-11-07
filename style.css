@@ -29,11 +29,24 @@ body { overflow-x: hidden; }
 .right { text-align: right; }
 .maillink { color: var(--accent); font-size: 15px; font-weight: 500; text-decoration: none; padding: 6px 4px; }
 
-/* Quick add box on Today */
-.card.quick { padding: 10px 12px; }
-.card.quick form.inline { margin: 0; }
-#quickPreview { line-height: 1.4; }
-#quickPreview:not(:empty) { margin-top: 6px; }
+/* Round ＋ button on Today (quick add) */
+#fab { position: fixed; right: 18px; bottom: calc(env(safe-area-inset-bottom) + 74px); z-index: 6; width: 56px; height: 56px;
+  border-radius: 50%; border: 0; background: var(--accent); color: #fff; font-size: 30px; line-height: 1;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, .25); transition: transform .15s; }
+#fab:active { transform: scale(.92); }
+#quickInput { width: 100%; }
+#quickPreview { line-height: 1.4; margin: 8px 4px 0; }
+#topAction .icon-btn { font-size: 22px; }
+
+/* Search */
+input.search { width: 100%; margin-bottom: 12px; background: var(--card); }
+.sicon { width: 28px; text-align: center; font-size: 18px; flex: none; }
+
+/* IB core selects */
+.core-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.core-grid label { font-size: 13px; color: var(--muted); }
+.core-grid select { margin-top: 4px; width: 100%; }
+.ibgrade { font-size: 22px; }
 
 /* Focus: this week's bar chart with a dashed goal line */
 .wbars { position: relative; height: 96px; display: flex; align-items: flex-end; gap: 8px; margin-top: 8px; }
@@ -81,8 +94,12 @@ h3.date:first-child { margin-top: 0; }
 h3.group { font-size: 13px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; margin: 18px 4px 6px; }
 h3.group:first-child { margin-top: 4px; }
 /* Text sitting straight on the background: white when there's a custom background or dark mode */
-body.custom-bg h3.group, body.custom-bg .topline { color: #fff; text-shadow: 0 1px 3px rgba(0, 0, 0, .45); }
-@media (prefers-color-scheme: dark) { h3.group, .topline { color: #fff; } }
+body.custom-bg h3.group, body.custom-bg .topline, body.custom-bg .month > b, body.custom-bg .cal-week,
+body.custom-bg #results > .empty, body.custom-bg #results > p.muted { color: #fff; text-shadow: 0 1px 3px rgba(0, 0, 0, .45); }
+@media (prefers-color-scheme: dark) { h3.group, .topline, .cal-week { color: #fff; } }
+/* Light background colour: dark text instead (also in dark mode) */
+body.bg-light h3.group, body.bg-light .topline, body.bg-light .month > b, body.bg-light .cal-week,
+body.bg-light #results > .empty, body.bg-light #results > p.muted { color: #3A3A3C; text-shadow: none; }
 .muted { color: var(--muted); }
 .small { font-size: 13px; }
 .center { text-align: center; }
@@ -220,3 +237,5 @@ body.custom-bg .card { background: color-mix(in srgb, var(--card) 88%, transpare
   transform: translate(-50%, 20px); background: var(--text); color: var(--bg); padding: 10px 16px;
   border-radius: 99px; font-size: 14px; opacity: 0; transition: .25s; pointer-events: none; white-space: nowrap; }
 #toast.show { opacity: 1; transform: translate(-50%, 0); }
+#toast.has-undo { pointer-events: auto; padding-right: 8px; }
+#toast button { background: none; border: 0; color: var(--accent); font-weight: 700; font-size: 14px; padding: 2px 8px; margin-left: 4px; }
