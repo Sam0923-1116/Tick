@@ -604,24 +604,36 @@ const VIEWS = {
   more() {
     const exam = db.exams.filter(e => daysUntil(e.date) >= 0).sort((a, b) => a.date.localeCompare(b.date))[0];
     const monthOut = sumBy(db.money.filter(x => x.type === "out" && x.date.startsWith(ymd().slice(0, 7))), "amount");
-    const items = [
-      ["schedule", "📚", "Timetable", sched().name],
-      ["holidays", "🏖️", "Terms & holidays", termLabel(ymd()) || (() => { const h = [...db.holidays].filter(x => (x.end || x.start) >= ymd()).sort((a, b) => a.start.localeCompare(b.start))[0]; return h ? `Next holiday: ${h.name} · ${fmtDate(h.start)}` : "No terms or holidays added"; })()],
-      ["modules", "📘", "Modules, grades & people", (() => { const o = overallGrade(); return o ? `Overall ${pct(o.avg)}${gradeLabel(o.avg) ? " · " + (db.settings.gradeSystem === "gpa" ? "GPA " + o.gpa.toFixed(2) : gradeLabel(o.avg)) : ""}` : `${plural(db.modules.length, "module")}`; })()],
-      ["docs", "🛂", "Documents & prep", (() => { const d = [...db.docs].sort((a, b) => a.expiry.localeCompare(b.expiry))[0]; return d ? `${d.name} expires ${fmtDate(d.expiry)}` : `Before you go: ${db.prep.filter(i => i.done).length}/${db.prep.length} done`; })()],
-      ["reminders", "🔔", "Reminders", db.settings.taskRemind ? `Homework & exams: evening before at ${db.settings.taskRemind}` : "Homework & exam reminders are off"],
-      ["exams", "⏰", "Exam countdown", exam ? `${exam.name} in ${plural(daysUntil(exam.date), "day")}` : "No exams yet"],
-      ["unis", "🎓", "Uni applications", `${db.unis.length} ${db.unis.length === 1 ? "university" : "universities"}`],
-      ["money", "🐷", "Money", `Spent this month: ${money(monthOut)}`],
-      ["habits", "🌱", "Habits", plural(db.habits.length, "habit")],
-      ["appearance", "🎨", "Appearance", "Home cards, accent colour, background"],
-      ["settings", "☁️", "Sync & backup", sync && sync.token ? `Synced ${sync.lastSync ? hhmm(sync.lastSync) : ""}` : "Cloud sync is off"],
+    const nextHol = [...db.holidays].filter(x => (x.end || x.start) >= ymd()).sort((a, b) => a.start.localeCompare(b.start))[0];
+    const firstDoc = [...db.docs].sort((a, b) => a.expiry.localeCompare(b.expiry))[0];
+    const o = overallGrade();
+    // [page, icon, bubble colour, name, short note]
+    const groups = [
+      ["School", [
+        ["schedule", "📚", "120,170,255", "Timetable", sched().name],
+        ["holidays", "🏖️", "120,220,160", "Terms & holidays", termLabel(ymd()) || (nextHol ? `Next: ${nextHol.name}` : "None yet")],
+        ["modules", "📘", "110,210,230", "Modules & grades", o ? `Overall ${db.settings.gradeSystem === "gpa" ? "GPA " + o.gpa.toFixed(2) : pct(o.avg)}` : "Marks, lecturers, office hours"],
+        ["exams", "⏰", "255,196,77", "Exam countdown", exam ? `${exam.name} in ${plural(daysUntil(exam.date), "day")}` : "No exams yet"],
+      ]],
+      ["Uni & abroad", [
+        ["unis", "🎓", "190,150,255", "Uni applications", `${db.unis.length} ${db.unis.length === 1 ? "university" : "universities"}`],
+        ["docs", "🛂", "255,160,110", "Documents & prep", firstDoc ? `${firstDoc.name} expires ${fmtDate(firstDoc.expiry)}` : `Before you go ${db.prep.filter(i => i.done).length}/${db.prep.length}`],
+      ]],
+      ["Life", [
+        ["money", "🐷", "255,150,190", "Money", `This month: ${money(monthOut)}`],
+        ["habits", "🌱", "120,220,160", "Habits", plural(db.habits.length, "habit")],
+      ]],
+      ["Settings", [
+        ["reminders", "🔔", "255,196,77", "Reminders", db.settings.taskRemind ? `Homework & exams at ${db.settings.taskRemind}` : "Homework & exams off"],
+        ["appearance", "🎨", "255,150,190", "Appearance", "Home cards, colours, background"],
+        ["settings", "☁️", "120,170,255", "Sync & backup", sync && sync.token ? `Synced ${sync.lastSync ? hhmm(sync.lastSync) : ""}` : "Cloud sync is off"],
+      ]],
     ];
     return {
       title: "More",
-      html: `<section class="card">${items.map(([id, ic, name, sub]) => `
-        <div class="row" data-act="open" data-id="${id}"><span class="icon">${ic}</span>
-          <div class="grow"><b>${name}</b><div class="muted small">${esc(sub)}</div></div><span class="muted">›</span></div>`).join("")}</section>`,
+      html: groups.map(([g, rows]) => `<h3 class="group">${g}</h3><section class="card">${rows.map(([id, ic, rgb, name, sub]) => `
+        <div class="row" data-act="open" data-id="${id}"><span class="icon" style="background:rgba(${rgb},.25)">${ic}</span>
+          <div class="grow"><b>${name}</b><div class="muted small">${esc(sub)}</div></div><span class="muted">›</span></div>`).join("")}</section>`).join(""),
     };
   },
 
