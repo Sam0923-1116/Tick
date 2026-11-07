@@ -894,14 +894,15 @@ async function runSync(fn) {
     if (fn === push) pushPending = true;
   }
   syncBusy = false; saveSync(); showSyncStatus();
-  if (pushPending && !sync.error) schedulePush();
+  // 已經離開 App 時要馬上傳，計時器在背景可能不會跑
+  if (pushPending && !sync.error) { if (document.hidden) runSync(push); else schedulePush(); }
 }
 
 function schedulePush() {
   if (!sync || !sync.token) return;
   pushPending = true;
   clearTimeout(pushTimer);
-  pushTimer = setTimeout(() => runSync(push), 1500);
+  pushTimer = setTimeout(() => runSync(push), 500);
 }
 
 function pullIfStale() {
