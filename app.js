@@ -1051,44 +1051,89 @@ function importData(text) {
 // ===== Swipe left / right =====
 // On the month grid: change month. In Lists: To-dos ↔ Homework first. Anywhere else: next/previous tab.
 // Inside a sub-page: swipe right = back.
-let touch = null;
+// The page follows your finger; let go far (or fast) enough and it slides to the next one, otherwise it springs back.
+const EASE = "cubic-bezier(.2, .8, .2, 1)";
+let drag = null;
+const dragEl = onCal => $(onCal ? ".cal" : "#view");
+
 document.addEventListener("touchstart", e => {
-  touch = null;
+  drag = null;
   if (!$("#modal").hidden || e.touches.length > 1 || e.target.closest("input, select, textarea, nav, .swatches, .chips")) return;
   const t = e.touches[0];
-  touch = { x: t.clientX, y: t.clientY, time: Date.now(), onCal: !!e.target.closest(".cal, .cal-week, .month") };
-}, { passive: true });
-document.addEventListener("touchend", e => {
-  if (!touch) return;
-  const t = e.changedTouches[0], dx = t.clientX - touch.x, dy = t.clientY - touch.y, s = touch;
-  touch = null;
-  if (Math.abs(dx) < 60 || Math.abs(dx) < Math.abs(dy) * 1.5 || Date.now() - s.time > 700) return;
-  swipe(dx < 0 ? 1 : -1, s.onCal);
+  const onCal = ui.tab === "calendar" && !ui.page && !!e.target.closest(".cal, .cal-week, .month");
+  drag = { x: t.clientX, y: t.clientY, time: Date.now(), onCal, lock: null, dx: 0 };
 }, { passive: true });
 
-// dir = 1: swiped left (go forward); dir = -1: swiped right (go back)
-function swipe(dir, onCal) {
-  if (ui.page) { if (dir < 0) { ACT.back(); slideIn(dir); } return; }
-  if (onCal && ui.tab === "calendar") { ACT.calMonth(dir); return slideIn(dir); }
-  if (ui.tab === "list" && ui.listMode === (dir > 0 ? "todo" : "task")) { ACT.listMode(dir > 0 ? "task" : "todo"); return slideIn(dir); }
-  const next = TABS[TABS.indexOf(ui.tab) + dir];
-  if (!next) return;
-  if (next === "list") ui.listMode = dir > 0 ? "todo" : "task"; // land on the side you swiped in from
-  ACT.tab(next);
-  slideIn(dir);
+document.addEventListener("touchmove", e => {
+  if (!drag) return;
+  const t = e.touches[0], dx = t.clientX - drag.x, dy = t.clientY - drag.y;
+  if (!drag.lock) {
+    if (Math.abs(dx) < 8 && Math.abs(dy) < 8) return;
+    drag.lock = Math.abs(dx) > Math.abs(dy) ? "x" : "y"; // decide once: sideways swipe or normal scrolling
+    if (drag.lock === "y") { drag = null; return; }
+  }
+  e.preventDefault();
+  drag.dx = dx;
+  const el = dragEl(drag.onCal);
+  // Nothing to go to on that side: move only a little, like a rubber band
+  const x = canSwipe(dx < 0 ? 1 : -1, drag.onCal) ? dx : dx * 0.25;
+  el.style.transition = "none";
+  el.style.transform = `translateX(${x}px)`;
+  el.style.opacity = 1 - Math.min(Math.abs(x) / 700, 0.35);
+}, { passive: false });
+
+function endDrag() {
+  if (!drag || drag.lock !== "x") { drag = null; return; }
+  const d = drag, el = dragEl(d.onCal), dir = d.dx < 0 ? 1 : -1;
+  drag = null;
+  const speed = Math.abs(d.dx) / (Date.now() - d.time);
+  if ((Math.abs(d.dx) > 70 || (speed > 0.35 && Math.abs(d.dx) > 25)) && canSwipe(dir, d.onCal)) {
+    el.style.transition = "transform .15s ease-in, opacity .15s ease-in";
+    el.style.transform = `translateX(${-dir * innerWidth * 0.5}px)`;
+    el.style.opacity = "0";
+    setTimeout(() => { swipe(dir, d.onCal); slideIn(dir, d.onCal); }, 140);
+  } else {
+    el.style.transition = `transform .3s ${EASE}, opacity .3s`;
+    el.style.transform = "";
+    el.style.opacity = "";
+  }
+}
+document.addEventListener("touchend", endDrag);
+document.addEventListener("touchcancel", endDrag);
+
+// Is there somewhere to go? dir = 1: swiped left (forward); dir = -1: swiped right (back)
+function canSwipe(dir, onCal) {
+  if (ui.page) return dir < 0;
+  if (onCal) return true;
+  if (ui.tab === "list" && ui.listMode === (dir > 0 ? "todo" : "task")) return true;
+  return !!TABS[TABS.indexOf(ui.tab) + dir];
 }
 
-function slideIn(dir) {
-  const v = $("#view");
-  v.classList.remove("slide-l", "slide-r");
-  void v.offsetWidth; // restart the animation
-  v.classList.add(dir > 0 ? "slide-l" : "slide-r");
+function swipe(dir, onCal) {
+  if (ui.page) return ACT.back();
+  if (onCal) return ACT.calMonth(dir);
+  if (ui.tab === "list" && ui.listMode === (dir > 0 ? "todo" : "task")) return ACT.listMode(dir > 0 ? "task" : "todo");
+  const next = TABS[TABS.indexOf(ui.tab) + dir];
+  if (next === "list") ui.listMode = dir > 0 ? "todo" : "task"; // land on the side you swiped in from
+  ACT.tab(next);
+}
+
+// New content glides in from the side it came from (dir 0 = just a soft fade, used for tab taps)
+function slideIn(dir, onCal) {
+  const el = dragEl(onCal);
+  el.style.transition = "none";
+  el.style.transform = dir ? `translateX(${dir * 60}px)` : "translateY(6px)";
+  el.style.opacity = "0";
+  void el.offsetWidth; // apply the start position before animating
+  el.style.transition = `transform .3s ${EASE}, opacity .25s`;
+  el.style.transform = "";
+  el.style.opacity = "";
 }
 
 // ===== Button actions =====
 const ACT = {
-  tab: id => { ui.tab = id; ui.page = null; render(); scrollTo(0, 0); },
-  open: id => { ui.page = id; render(); scrollTo(0, 0); },
+  tab: id => { ui.tab = id; ui.page = null; render(); scrollTo(0, 0); slideIn(0); },
+  open: id => { ui.page = id; render(); scrollTo(0, 0); slideIn(0); },
   back: () => { ui.page = ui.page === "uni" ? "unis" : null; render(); },
   closeModal, submitForm, deleteForm,
 
