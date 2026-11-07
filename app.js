@@ -156,7 +156,7 @@ function streak(id) {
 }
 
 // 行程在某一天有沒有發生（處理重複）
-function occursOn(e, ds) {
+function startsOn(e, ds) {
   if (ds < e.date) return false;
   const a = parseYmd(e.date), b = parseYmd(ds);
   switch (e.repeat) {
@@ -168,10 +168,30 @@ function occursOn(e, ds) {
   }
 }
 
+// 行程總共幾天（有填結束日期 = 多天行程）
+const spanOf = e => e.endDate && e.endDate > e.date ? Math.round((parseYmd(e.endDate) - parseYmd(e.date)) / 864e5) + 1 : 1;
+
+// 這天是行程的第幾天（1 起算）；沒有 = 0
+function occursOn(e, ds) {
+  for (let k = 0; k < spanOf(e); k++) if (startsOn(e, ymd(addDays(parseYmd(ds), -k)))) return k + 1;
+  return 0;
+}
+
+function eventItem(e, ds) {
+  const n = spanOf(e), k = occursOn(e, ds);
+  const tags = [];
+  if (e.repeat && e.repeat !== "none") tags.push("🔁");
+  if (n > 1) tags.push(`第 ${k}/${n} 天`);
+  if (n > 1 && k === n && e.start && e.end) tags.push("到 " + e.end);
+  // 多天行程：第一天顯示開始時間，其他天當整天
+  const time = k === 1 ? e.start || "" : "";
+  return { title: e.title, time, end: n === 1 ? e.end || "" : "", color: e.color, act: "editEvent", id: e.id, tag: tags.join(" ") };
+}
+
 // 某一天所有的事：行程、考試、作業、待辦、大學截止日（和課程）
 function itemsOn(ds, withClasses) {
   const out = [];
-  db.events.filter(e => occursOn(e, ds)).forEach(e => out.push({ title: e.title, time: e.start || "", end: e.end || "", color: e.color, act: "editEvent", id: e.id, tag: e.repeat && e.repeat !== "none" ? "🔁" : "" }));
+  db.events.filter(e => occursOn(e, ds)).forEach(e => out.push(eventItem(e, ds)));
   db.exams.filter(e => e.date === ds).forEach(e => out.push({ title: "考試：" + e.name, color: "#E5484D", act: "editExam", id: e.id }));
   db.unis.filter(u => u.deadline === ds).forEach(u => out.push({ title: "截止：" + u.name, color: "#B48CDB", act: "openUni", id: u.id }));
   db.tasks.filter(t => t.due === ds).forEach(t => out.push({ title: t.title, color: colorOf(t.subject), act: "editTask", check: "toggleTask", id: t.id, done: t.done, tag: t.type }));
@@ -728,14 +748,17 @@ function eventForm(e, date) {
   const isNew = !e;
   form(isNew ? "新增行程" : "編輯行程", [
     { key: "title", label: "行程", type: "text", required: true, ph: "例如：補習、看牙醫、社團" },
-    { key: "date", label: isNew ? "日期" : "日期（重複行程的第一天）", type: "date", required: true },
+    { key: "date", label: isNew ? "開始日期" : "開始日期（重複行程的第一天）", type: "date", required: true },
+    { key: "endDate", label: "結束日期（多天行程才填）", type: "date" },
     { key: "start", label: "開始時間（不填 = 整天）", type: "time" },
-    { key: "end", label: "結束時間", type: "time" },
+    { key: "end", label: "結束時間（多天行程 = 最後一天幾點結束）", type: "time" },
     { key: "repeat", label: "重複", type: "select", options: REPEATS },
     { key: "color", label: "顏色", type: "color" },
     { key: "note", label: "備註", type: "textarea" },
   ], e || { date: date || ymd(), repeat: "none", color: PALETTE[8] }, v => {
-    if (v.start && v.end && toMin(v.end) <= toMin(v.start)) return "結束時間要比開始晚";
+    if (v.endDate && v.endDate < v.date) return "結束日期不能比開始日期早";
+    if (v.endDate === v.date) v.endDate = "";
+    if (!v.endDate && v.start && v.end && toMin(v.end) <= toMin(v.start)) return "結束時間要比開始晚";
     if (!v.start) v.end = "";
     if (isNew) db.events.push({ id: uid(), ...v });
     else Object.assign(e, v);
