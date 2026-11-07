@@ -16,7 +16,15 @@ const TASK_TYPES = ["Homework", "IA", "EE", "TOK", "Quiz", "Presentation", "Othe
 const UNI_STATUS = ["Researching", "Preparing", "Submitted", "Interview", "Offer", "Waitlist", "Rejected"];
 const UNI_COUNTRIES = ["UK", "US", "Canada", "Other"];
 const UNI_ITEMS = ["Personal statement / Essay", "Reference letter", "Transcript / Predicted grades", "English test score", "Pay application fee"];
-const MONEY_CATS = ["Food", "Transport", "Study", "Fun", "Shopping", "Living", "Allowance", "Part-time job", "Other"];
+const MONEY_CATS = ["Food", "Groceries", "Rent", "Bills", "Transport", "Study", "Fun", "Shopping", "Living", "Allowance", "Part-time job", "Other"];
+const CURRENCIES = ["$", "NT$", "£", "US$", "C$", "€"];
+const CLASS_KINDS = [["", "—"], ["Lecture", "Lecture"], ["Tutorial", "Tutorial"], ["Lab", "Lab"], ["Seminar", "Seminar"], ["Workshop", "Workshop"]];
+const GRADE_SYSTEMS = [["uk", "UK (First, 2:1, 2:2…)"], ["gpa", "US / Canada GPA (4.0)"], ["pct", "Percentage only"]];
+const PEOPLE_ROLES = ["Lecturer", "Professor", "Tutor", "TA", "Advisor", "Other"];
+const DOC_NAMES = ["Passport", "Visa / BRP / eVisa", "Student insurance", "Accommodation contract", "CAS / I-20", "Driving licence"];
+const PREP_ITEMS = ["CAS / I-20 received", "Visa approved", "Flights booked", "Accommodation sorted", "Health insurance / IHS", "Open a bank account",
+  "Phone plan / SIM", "Online enrolment done", "Register with a doctor (GP)", "Pack (adapter, documents, meds)"];
+const HOME_TZ = "Asia/Taipei"; // shown on Today when you're in a different time zone
 const PRIORITIES = [[0, "None"], [1, "Low"], [2, "Medium"], [3, "High"]];
 const PRIO_COLOR = ["#8E8E93", "#4C8BF5", "#E08A00", "#E5484D"];
 const BG_KEY = "myhq-bg"; // background photo is only kept on this phone
@@ -51,7 +59,7 @@ const daysUntil = s => daysBetween(ymd(), s);
 const toMin = t => { const [h, m] = t.split(":").map(Number); return h * 60 + m; };
 const find = (arr, id) => arr.find(x => x.id === id);
 const sumBy = (arr, k) => arr.reduce((s, x) => s + Number(x[k] || 0), 0);
-const money = n => "$" + Math.round(n).toLocaleString();
+const money = n => (db.settings.currency || "$") + Math.round(n).toLocaleString();
 const fmtMin = m => m >= 60 ? `${Math.floor(m / 60)} h${m % 60 ? ` ${m % 60} min` : ""}` : `${m} min`;
 const byDue = (a, b) => (a.due || "9999").localeCompare(b.due || "9999");
 const hhmm = ts => { const d = new Date(ts); return `${MONTHS[d.getMonth()]} ${d.getDate()} ${pad(d.getHours())}:${pad(d.getMinutes())}`; };
@@ -85,7 +93,8 @@ function fresh() {
   return {
     version: 1, updatedAt: 0, schedules: [s], activeSchedule: s.id,
     tasks: [], todos: [], events: [], focus: [], exams: [], unis: [], money: [], habits: [], habitLog: {}, holidays: [],
-    settings: { work: 25, brk: 5, goal: 120, taskRemind: "20:00" }, timer: null, lastBackup: null,
+    terms: [], modules: [], docs: [], recurring: [], prep: PREP_ITEMS.map(text => ({ text, done: false })),
+    settings: { work: 25, brk: 5, goal: 120, taskRemind: "20:00", currency: "$", budget: 0, gradeSystem: "uk" }, timer: null, lastBackup: null,
   };
 }
 
@@ -96,6 +105,7 @@ function migrate(d) {
   d.unis.forEach(u => { u.status = en(u.status); u.country = en(u.country); (u.items || []).forEach(i => { i.text = en(i.text); }); });
   d.money.forEach(x => { x.category = en(x.category); });
   d.focus.forEach(f => { f.subject = en(f.subject); });
+  d.settings = { ...fresh().settings, ...d.settings }; // new settings get their defaults
   return d;
 }
 
@@ -103,7 +113,6 @@ function load() {
   let d = null;
   try { d = JSON.parse(localStorage.getItem(KEY)); } catch {}
   d = d && d.version ? migrate({ ...fresh(), ...d }) : fresh();
-  d.settings = { ...fresh().settings, ...d.settings }; // new settings get their defaults
   // Done to-dos older than 30 days are cleared automatically
   const cutoff = ymd(addDays(new Date(), -30));
   d.todos = d.todos.filter(t => !(t.done && t.doneAt && t.doneAt < cutoff));
@@ -152,8 +161,68 @@ const classesOn = day => sched().classes.filter(c => +c.day === day).sort((a, b)
 const habitDone = (id, date) => (db.habitLog[date] || []).includes(id);
 // The holiday covering this date, if any; no classes are shown on holidays
 const holidayOn = ds => db.holidays.find(h => h.start <= ds && ds <= (h.end || h.start));
-const classesOnDate = ds => holidayOn(ds) ? [] : classesOn(parseYmd(ds).getDay());
+// Terms belong to a timetable. If the active timetable has terms, classes only happen inside them,
+// and a class can be limited to some weeks ("1-10", "1-5, 7-11", "odd", "even"; empty = every week).
+const schedTerms = () => db.terms.filter(t => t.sched === sched().id);
+const termOn = ds => schedTerms().find(t => t.start <= ds && ds <= t.end);
+const weekOf = (t, ds) => { const s = parseYmd(t.start); return Math.floor(daysBetween(ymd(addDays(s, -((s.getDay() + 6) % 7))), ds) / 7) + 1; };
+function inWeeks(spec, w) {
+  spec = String(spec || "").trim().toLowerCase();
+  if (!spec) return true;
+  if (spec === "odd") return w % 2 === 1;
+  if (spec === "even") return w % 2 === 0;
+  return spec.split(",").some(p => { const [a, b] = p.split("-").map(x => parseInt(x, 10)); return b ? w >= a && w <= b : w === a; });
+}
+function classesOnDate(ds) {
+  if (holidayOn(ds)) return [];
+  const t = termOn(ds);
+  if (schedTerms().length && !t) return []; // between terms
+  return classesOn(parseYmd(ds).getDay()).filter(c => !t || inWeeks(c.weeks, weekOf(t, ds)));
+}
+const termLabel = ds => { const t = termOn(ds); return t ? `${t.name} · Week ${weekOf(t, ds)}` : ""; };
+
+// The time back home, only when the phone is in another time zone
+function homeTime(tz = HOME_TZ, now = new Date()) {
+  const p = Object.fromEntries(new Intl.DateTimeFormat("en-US", { timeZone: tz, hourCycle: "h23", year: "numeric", month: "numeric", day: "numeric", hour: "numeric", minute: "numeric", weekday: "short" })
+    .formatToParts(now).map(x => [x.type, x.value]));
+  const there = Date.UTC(p.year, p.month - 1, p.day, p.hour, p.minute);
+  const here = Date.UTC(now.getFullYear(), now.getMonth(), now.getDate(), now.getHours(), now.getMinutes());
+  const diff = Math.round((there - here) / 36e5);
+  if (!diff) return "";
+  return `🇹🇼 Taiwan ${pad(p.hour)}:${pad(p.minute)}${Number(p.day) !== now.getDate() ? " " + p.weekday : ""} (${diff > 0 ? "+" : ""}${diff}h)`;
+}
 const curUni = () => find(db.unis, ui.pageId);
+const curModule = () => find(db.modules, ui.pageId);
+
+// ===== Grades =====
+// Module mark = weighted average of the assessments that have a score
+const scored = m => m.items.filter(i => i.score !== "" && i.score != null);
+function moduleAvg(m) {
+  const s = scored(m), w = sumBy(s, "weight");
+  return w ? s.reduce((t, i) => t + i.weight * i.score, 0) / w : null;
+}
+// Score needed on the rest of the module to reach the target
+function neededFor(m) {
+  const total = sumBy(m.items, "weight"), s = scored(m), rest = total - sumBy(s, "weight");
+  if (!total || rest <= 0) return null;
+  return { need: (m.target * total - s.reduce((t, i) => t + i.weight * i.score, 0)) / rest, rest: Math.round((rest / total) * 100) };
+}
+const GPA = [[93, "A", 4.0], [90, "A-", 3.7], [87, "B+", 3.3], [83, "B", 3.0], [80, "B-", 2.7], [77, "C+", 2.3], [73, "C", 2.0], [70, "C-", 1.7], [67, "D+", 1.3], [60, "D", 1.0], [0, "F", 0]];
+const gpaOf = p => GPA.find(g => p >= g[0]);
+function gradeLabel(p) {
+  if (p == null) return "";
+  if (db.settings.gradeSystem === "gpa") { const g = gpaOf(p); return `${g[1]} (${g[2].toFixed(1)})`; }
+  if (db.settings.gradeSystem === "uk") return p >= 70 ? "First" : p >= 60 ? "2:1" : p >= 50 ? "2:2" : p >= 40 ? "Third" : "Fail";
+  return "";
+}
+const pct = p => (Math.round(p * 10) / 10) + "%";
+// Overall: credit-weighted (GPA uses each module's grade points)
+function overallGrade() {
+  const list = db.modules.map(m => ({ c: Number(m.credits) || 1, a: moduleAvg(m) })).filter(x => x.a != null);
+  const c = sumBy(list, "c");
+  if (!c) return null;
+  return { avg: list.reduce((t, x) => t + x.c * x.a, 0) / c, gpa: list.reduce((t, x) => t + x.c * gpaOf(x.a)[2], 0) / c, n: list.length };
+}
 
 function subjects() {
   const set = new Set(sched().classes.map(c => c.name));
@@ -227,9 +296,15 @@ function itemsOn(ds, withClasses) {
   db.events.filter(e => occursOn(e, ds)).forEach(e => out.push(eventItem(e, ds)));
   db.exams.filter(e => e.date === ds).forEach(e => out.push({ title: "Exam: " + e.name, color: "#E5484D", act: "editExam", id: e.id }));
   db.unis.filter(u => u.deadline === ds).forEach(u => out.push({ title: "Deadline: " + u.name, color: "#B48CDB", act: "openUni", id: u.id }));
+  db.docs.filter(d => d.expiry === ds).forEach(d => out.push({ title: "🛂 " + d.name + " expires", color: "#E08A00", act: "editDoc", id: d.id }));
   db.tasks.filter(t => t.due === ds).forEach(t => out.push({ title: t.title, color: colorOf(t.subject), act: "editTask", check: "toggleTask", id: t.id, done: t.done, tag: t.type }));
   db.todos.filter(t => t.date === ds).forEach(t => out.push({ title: t.text, color: PRIO_COLOR[t.priority || 0], act: "editTodo", check: "toggleTodo", id: t.id, done: t.done, prio: t.priority || 0 }));
-  if (withClasses) classesOnDate(ds).forEach(c => out.push({ title: c.name, time: c.start, end: c.end, color: c.color, act: "editClass", id: c.id, tag: c.room, isClass: true }));
+  if (withClasses) {
+    classesOnDate(ds).forEach(c => out.push({ title: c.name, time: c.start, end: c.end, color: c.color, act: "editClass", id: c.id, tag: [c.kind, c.room].filter(Boolean).join(" · "), isClass: true }));
+    // Office hours from Modules → people
+    if (!hol) db.modules.forEach(m => m.people.filter(p => p.ohDay !== "" && p.ohDay != null && +p.ohDay === parseYmd(ds).getDay() && p.ohStart).forEach(p =>
+      out.push({ title: "Office hours: " + p.name, time: p.ohStart, end: p.ohEnd || "", color: "#8E8E93", act: "openModule", id: m.id, tag: [m.name, p.ohPlace].filter(Boolean).join(" · "), isClass: true })));
+  }
   return out.sort((a, b) => (a.done - b.done) || (a.time || "").localeCompare(b.time || "") || ((b.prio || 0) - (a.prio || 0)));
 }
 
@@ -243,7 +318,7 @@ const classRow = (c, isNow, edit) => `
   <div class="row" ${edit ? `data-act="editClass" data-id="${c.id}"` : ""}>
     <i class="bar" style="background:${esc(c.color)}"></i>
     <div class="grow"><b>${esc(c.name)}</b>
-      <div class="muted small">${c.start}–${c.end}${c.room ? " · " + esc(c.room) : ""}</div></div>
+      <div class="muted small">${c.start}–${c.end}${[c.kind, c.room, c.weeks ? "Wk " + c.weeks : ""].filter(Boolean).map(x => " · " + esc(x)).join("")}</div></div>
     ${isNow ? '<span class="pill now">Now</span>' : ""}
   </div>`;
 
@@ -251,7 +326,7 @@ const todoRow = (t, showDate) => `
   <div class="row">
     <button class="check prio${t.priority || 0} ${t.done ? "on" : ""}" data-act="toggleTodo" data-id="${t.id}"></button>
     <div class="grow" data-act="editTodo" data-id="${t.id}">
-      <span class="${t.done ? "done" : ""}">${esc(t.text)}</span>
+      <span class="${t.done ? "done" : ""}">${esc(t.text)}</span>${t.repeat && t.repeat !== "none" ? ' <span class="small muted">🔁</span>' : ""}
       ${showDate && t.date ? `<div class="small">${t.date < ymd() && !t.done ? dueLabel(t.date) : `<span class="muted">${fmtDate(t.date)}</span>`}</div>` : ""}
     </div>
     ${t.priority ? `<span class="flag" style="color:${PRIO_COLOR[t.priority]}">⚑</span>` : ""}
@@ -277,11 +352,12 @@ const itemRow = it => `
     ${it.check ? `<i class="dot" style="background:${esc(it.color)}"></i>` : ""}
   </div>`;
 
-const checkItem = (it, i) => `
+// A checklist row; kind "Item" = uni checklist, "Prep" = before-you-go list
+const checkItem = (it, i, kind = "Item") => `
   <div class="row">
-    <button class="check ${it.done ? "on" : ""}" data-act="toggleItem" data-id="${i}"></button>
+    <button class="check ${it.done ? "on" : ""}" data-act="toggle${kind}" data-id="${i}"></button>
     <span class="grow ${it.done ? "done" : ""}">${esc(it.text)}</span>
-    <button class="x" data-act="delItem" data-id="${i}">×</button>
+    <button class="x" data-act="del${kind}" data-id="${i}">×</button>
   </div>`;
 
 const empty = text => `<p class="empty">${text}</p>`;
@@ -353,6 +429,7 @@ const VIEWS = {
       title: `${DAYS_FULL[now.getDay()]}, ${MONTHS[now.getMonth()]} ${now.getDate()}`,
       html: `
         ${needBackup ? `<div class="banner" data-act="open" data-id="settings">💾 ${db.lastBackup ? "No backup in over 2 weeks" : "Never backed up"} — turn on cloud sync ›</div>` : ""}
+        ${termLabel(td) || homeTime() ? `<p class="topline">${[termLabel(td) && "📆 " + termLabel(td), `<span id="homeClock">${homeTime()}</span>`].filter(Boolean).join(" · ")}</p>` : ""}
         ${quick}
         ${shown || `<section class="card">${empty("All home cards are turned off<br>Turn them on in More → Appearance")}</section>`}`,
     };
@@ -417,7 +494,7 @@ const VIEWS = {
         <div class="month"><button data-act="calMonth" data-id="-1">‹</button><b>${MONTHS_FULL[m - 1]} ${y}</b><button data-act="calMonth" data-id="1">›</button></div>
         <div class="cal-week">${DAYS.map(d => `<span>${d}</span>`).join("")}</div>
         <div class="cal">${cells.join("")}</div>
-        <section class="card"><h2>${fmtDate(sel)}${sel === td ? " · Today" : ""}</h2>
+        <section class="card"><h2>${fmtDate(sel)}${sel === td ? " · Today" : ""}${termLabel(sel) ? `<span>${esc(termLabel(sel))}</span>` : ""}</h2>
           ${others.map(itemRow).join("") || empty("Nothing planned")}
           <div class="agenda-add">
             <button class="btn" data-act="addEvent" data-id="${sel}">＋ Event</button>
@@ -529,7 +606,9 @@ const VIEWS = {
     const monthOut = sumBy(db.money.filter(x => x.type === "out" && x.date.startsWith(ymd().slice(0, 7))), "amount");
     const items = [
       ["schedule", "📚", "Timetable", sched().name],
-      ["holidays", "🏖️", "Holidays", (() => { const h = [...db.holidays].filter(x => (x.end || x.start) >= ymd()).sort((a, b) => a.start.localeCompare(b.start))[0]; return h ? `Next: ${h.name} · ${fmtDate(h.start)}` : "No holidays added"; })()],
+      ["holidays", "🏖️", "Terms & holidays", termLabel(ymd()) || (() => { const h = [...db.holidays].filter(x => (x.end || x.start) >= ymd()).sort((a, b) => a.start.localeCompare(b.start))[0]; return h ? `Next holiday: ${h.name} · ${fmtDate(h.start)}` : "No terms or holidays added"; })()],
+      ["modules", "📘", "Modules & grades", (() => { const o = overallGrade(); return o ? `Overall ${pct(o.avg)}${gradeLabel(o.avg) ? " · " + (db.settings.gradeSystem === "gpa" ? "GPA " + o.gpa.toFixed(2) : gradeLabel(o.avg)) : ""}` : `${plural(db.modules.length, "module")}`; })()],
+      ["docs", "🛂", "Documents & prep", (() => { const d = [...db.docs].sort((a, b) => a.expiry.localeCompare(b.expiry))[0]; return d ? `${d.name} expires ${fmtDate(d.expiry)}` : `Before you go: ${db.prep.filter(i => i.done).length}/${db.prep.length} done`; })()],
       ["reminders", "🔔", "Reminders", db.settings.taskRemind ? `Homework & exams: evening before at ${db.settings.taskRemind}` : "Homework & exam reminders are off"],
       ["exams", "⏰", "Exam countdown", exam ? `${exam.name} in ${plural(daysUntil(exam.date), "day")}` : "No exams yet"],
       ["unis", "🎓", "Uni applications", `${db.unis.length} ${db.unis.length === 1 ? "university" : "universities"}`],
@@ -553,11 +632,87 @@ const VIEWS = {
         <div class="grow"><b>🏖️ ${esc(h.name)}</b><div class="muted small">${fmtDate(h.start)}${h.end && h.end !== h.start ? " – " + fmtDate(h.end) : ""}</div></div>
         ${h.start <= td && td <= (h.end || h.start) ? '<span class="pill now">Now</span>' : ""}</div>`;
     const coming = list.filter(h => (h.end || h.start) >= td).reverse(), past = list.filter(h => (h.end || h.start) < td);
+    const terms = [...db.terms].sort((a, b) => a.start.localeCompare(b.start));
+    const schedName = id => (db.schedules.find(s => s.id === id) || {}).name || "(deleted timetable)";
     return {
-      title: "Holidays",
-      action: `<button data-act="addHoliday">＋</button>`,
-      html: `<section class="card">${coming.map(row).join("") || empty("No holidays yet — tap ＋ to add one<br>Classes are hidden on these days (app and widget)")}</section>
-        ${past.length ? `<section class="card"><h2>Past</h2>${past.map(row).join("")}</section>` : ""}`,
+      title: "Terms & holidays",
+      html: `
+        <section class="card"><h2>Terms <a data-act="addTerm">＋ Add</a></h2>
+          ${terms.map(t => `<div class="row" data-act="editTerm" data-id="${t.id}">
+            <div class="grow"><b>${esc(t.name)}</b><div class="muted small">${fmtDate(t.start)} – ${fmtDate(t.end)} · ${esc(schedName(t.sched))}</div></div>
+            ${t.start <= td && td <= t.end && t.sched === sched().id ? `<span class="pill now">Week ${weekOf(t, td)}</span>` : ""}</div>`).join("")
+            || empty("No terms yet")}
+          <p class="small muted">A term belongs to one timetable. When that timetable has terms, Today shows the week number, and classes only appear during terms (and only in the weeks you set for each class).</p></section>
+        <section class="card"><h2>Holidays <a data-act="addHoliday">＋ Add</a></h2>
+          ${coming.map(row).join("") || empty("No holidays yet")}
+          <p class="small muted">Classes are hidden on holidays (app and widget). Reading week works well as a holiday.</p></section>
+        ${past.length ? `<section class="card"><h2>Past holidays</h2>${past.map(row).join("")}</section>` : ""}`,
+    };
+  },
+
+  modules() {
+    const o = overallGrade(), sys = db.settings.gradeSystem;
+    return {
+      title: "Modules & grades",
+      action: `<button data-act="addModule">＋</button>`,
+      html: `
+        ${o ? `<section class="card"><h2>Overall <span>${plural(o.n, "module")} with marks</span></h2>
+          <p class="big">${sys === "gpa" ? "GPA " + o.gpa.toFixed(2) : pct(o.avg)} <small class="muted">${sys === "gpa" ? pct(o.avg) : gradeLabel(o.avg)}</small></p>
+          <p class="small muted">Weighted by credits.</p></section>` : ""}
+        <section class="card">${db.modules.map(m => { const a = moduleAvg(m); return `
+          <div class="row" data-act="openModule" data-id="${m.id}">
+            <i class="bar" style="background:${esc(colorOf(m.name))}"></i>
+            <div class="grow"><b>${esc(m.name)}</b><div class="muted small">${m.credits ? m.credits + " credits · " : ""}${m.items.length ? `${scored(m).length}/${m.items.length} marked` : "No assessments yet"}</div></div>
+            ${a != null ? `<div class="right"><b>${pct(a)}</b><div class="small muted">${gradeLabel(a)}</div></div>` : ""}</div>`; }).join("")
+          || empty("No modules yet — tap ＋ at the top right<br>Add your courses, their assessments and your marks")}</section>
+        <section class="card"><h2>Grading system</h2>
+          <select data-change="gradeSystem">${GRADE_SYSTEMS.map(([v, l]) => `<option value="${v}" ${v === sys ? "selected" : ""}>${l}</option>`).join("")}</select></section>`,
+    };
+  },
+
+  module() {
+    const m = curModule();
+    if (!m) { ui.page = "modules"; return VIEWS.modules(); }
+    const a = moduleAvg(m), need = neededFor(m), totalW = sumBy(m.items, "weight");
+    let needText = "";
+    if (need) needText = need.need <= 0 ? `🎉 ${pct(m.target)} is already secured` : need.need > 100 ? `${pct(m.target)} is no longer reachable — max is ${pct(((a * (100 - need.rest)) + 100 * need.rest) / 100)}` : `Need <b>${pct(need.need)}</b> on the remaining ${need.rest}% to get ${pct(m.target)}${gradeLabel(m.target) ? " (" + gradeLabel(m.target) + ")" : ""}`;
+    return {
+      title: m.name,
+      action: `<button class="txt" data-act="editModule" data-id="${m.id}">Edit</button>`,
+      html: `
+        <section class="card"><h2>Current mark ${m.credits ? `<span>${m.credits} credits</span>` : ""}</h2>
+          <p class="big">${a != null ? pct(a) : "—"} <small class="muted">${gradeLabel(a)}</small></p>
+          ${needText ? `<p class="small">${needText}</p>` : ""}
+          ${totalW && totalW !== 100 ? `<p class="small late">Weights add up to ${totalW}%, not 100%</p>` : ""}</section>
+        <section class="card"><h2>Assessments <a data-act="addAssess">＋ Add</a></h2>
+          ${m.items.map((it, i) => `<div class="row" data-act="editAssess" data-id="${i}">
+            <div class="grow"><b>${esc(it.name)}</b><div class="muted small">${it.weight}% of the module</div></div>
+            <b>${it.score !== "" && it.score != null ? pct(it.score) : '<span class="muted">—</span>'}</b></div>`).join("")
+            || empty("e.g. Problem sheets 10%, Midterm 20%, Final exam 70%")}</section>
+        <section class="card"><h2>People <a data-act="addPerson">＋ Add</a></h2>
+          ${m.people.map((p, i) => `<div class="row">
+            <div class="grow" data-act="editPerson" data-id="${i}"><b>${esc(p.name)}</b> <span class="muted small">${esc(p.role)}</span>
+              <div class="muted small">${p.ohDay !== "" && p.ohDay != null && p.ohStart ? `Office hours: ${DAYS[p.ohDay]} ${p.ohStart}${p.ohEnd ? "–" + p.ohEnd : ""}${p.ohPlace ? " · " + esc(p.ohPlace) : ""}` : "No office hours set"}</div></div>
+            ${p.email ? `<a class="maillink" href="mailto:${esc(p.email)}">Email</a>` : ""}</div>`).join("")
+            || empty("Add lecturers, tutors and TAs<br>Office hours show up in your calendar")}</section>
+        ${m.link ? `<a class="btn wide" href="${esc(m.link)}" target="_blank" rel="noopener">🔗 Open course page</a>` : ""}`,
+    };
+  },
+
+  docs() {
+    const list = [...db.docs].sort((a, b) => a.expiry.localeCompare(b.expiry));
+    const left = s => { const n = daysUntil(s); return n < 0 ? `<span class="late">Expired</span>` : `<span class="${n <= 90 ? "soon" : "muted small"}">${n === 0 ? "Today" : n + " days"}</span>`; };
+    return {
+      title: "Documents & prep",
+      action: `<button data-act="addDoc">＋</button>`,
+      html: `
+        <section class="card"><h2>Expiry dates</h2>
+          ${list.map(d => `<div class="row" data-act="editDoc" data-id="${d.id}">
+            <div class="grow"><b>🛂 ${esc(d.name)}</b><div class="muted small">${fmtDate(d.expiry)}${d.note ? " · " + esc(d.note) : ""}</div></div>${left(d.expiry)}</div>`).join("")
+            || empty("Add your passport, visa, insurance…<br>You'll be reminded 3 months, 1 month and 1 week before")}</section>
+        <section class="card"><h2>Before you go <span>${db.prep.filter(i => i.done).length}/${db.prep.length}</span></h2>
+          ${db.prep.map((it, i) => checkItem(it, i, "Prep")).join("")}
+          <form class="inline" data-form="addPrep"><input name="text" placeholder="Add an item…" autocomplete="off"><button class="btn">＋</button></form></section>`,
     };
   },
 
@@ -569,6 +724,8 @@ const VIEWS = {
         <section class="card"><h2>How it works</h2>
           <p class="small">iPhone notifications are sent by your <b>Class Schedule</b> widget in Scriptable. It reads Tick's synced data and sets the reminders for the next 7 days.</p>
           <p class="small muted">Needs: cloud sync on${on ? " ✅" : " ❌ (turn it on in Sync & backup)"}, the Class Schedule widget on your home screen, and notifications allowed for Scriptable. New reminders are picked up the next time the widget refreshes (usually within 15–30 min).</p></section>
+        <section class="card"><h2>Documents</h2>
+          <p class="small muted">Passport, visa etc. from Documents & prep: reminded 3 months, 1 month, 1 week before and on the day they expire (9:00).</p></section>
         <section class="card"><h2>Events</h2>
           <p class="small muted">Choose a reminder for each event when you add or edit it (default: 30 min before).</p></section>
         <section class="card"><h2>Homework & exams</h2>
@@ -622,7 +779,7 @@ const VIEWS = {
           <div>${esc([u.program, u.country].filter(Boolean).join(" · ")) || '<span class="muted">(no course entered)</span>'}</div>
           <div class="small">Deadline: ${u.deadline ? fmtDate(u.deadline) + " " + dueLabel(u.deadline) : "not set"}</div></section>
         <section class="card"><h2>Checklist <span>${u.items.filter(i => i.done).length}/${u.items.length}</span></h2>
-          ${u.items.map(checkItem).join("") || empty("No items")}
+          ${u.items.map((it, i) => checkItem(it, i)).join("") || empty("No items")}
           <form class="inline" data-form="addItem"><input name="text" placeholder="Add an item…" autocomplete="off"><button class="btn">＋</button></form></section>
         ${u.notes ? `<section class="card"><h2>Notes</h2><p class="pre">${esc(u.notes)}</p></section>` : ""}`,
     };
@@ -632,7 +789,7 @@ const VIEWS = {
     const [y, m] = ui.month.split("-").map(Number);
     const items = db.money.filter(x => x.date.startsWith(ui.month)).sort((a, b) => b.date.localeCompare(a.date));
     const out = items.filter(x => x.type === "out"), inc = items.filter(x => x.type === "in");
-    const outSum = sumBy(out, "amount"), incSum = sumBy(inc, "amount");
+    const outSum = sumBy(out, "amount"), incSum = sumBy(inc, "amount"), budget = Number(db.settings.budget) || 0;
     const cats = {};
     out.forEach(x => { cats[x.category] = (cats[x.category] || 0) + x.amount; });
     const catRows = Object.entries(cats).sort((a, b) => b[1] - a[1]);
@@ -647,6 +804,15 @@ const VIEWS = {
           <div><span class="muted small">Spent</span><b>${money(outSum)}</b></div>
           <div><span class="muted small">Income</span><b class="pos">${money(incSum)}</b></div>
           <div><span class="muted small">Balance</span><b>${money(incSum - outSum)}</b></div></section>
+        <section class="card"><h2>Monthly budget <a data-act="moneySettings">Settings</a></h2>
+          ${budget ? `<p class="small"><b>${money(budget - outSum)}</b> ${budget >= outSum ? "left" : "over budget"} of ${money(budget)}</p>
+            <div class="meter"><i style="width:${Math.min(100, (outSum / budget) * 100)}%;background:${outSum > budget ? "var(--danger)" : outSum > budget * 0.8 ? "var(--warn)" : "var(--ok)"}"></i></div>`
+            : `<p class="small muted">No budget set. Tap Settings to set one and choose your currency.</p>`}</section>
+        <section class="card"><h2>Fixed every month <a data-act="addRecurring">＋ Add</a></h2>
+          ${db.recurring.map(x => `<div class="row" data-act="editRecurring" data-id="${x.id}">
+            <div class="grow"><b>${esc(x.category)}</b>${x.note ? ` <span class="muted small">${esc(x.note)}</span>` : ""}<div class="muted small">Day ${x.day} of every month</div></div>
+            <b class="${x.type === "in" ? "pos" : ""}">${x.type === "in" ? "+" : "−"}${money(x.amount)}</b></div>`).join("")
+            || `<p class="small muted">Rent, phone bill, subscriptions… recorded automatically each month.</p>`}</section>
         ${catRows.length ? `<section class="card"><h2>Spending by category</h2>${catRows.map(([c, v], i) => `
           <div class="barrow"><div class="small"><b>${esc(c)}</b> <span class="muted">${money(v)} · ${Math.round((v / outSum) * 100)}%</span></div>
           <div class="meter"><i style="width:${(v / catRows[0][1]) * 100}%;background:${PALETTE[i % PALETTE.length]}"></i></div></div>`).join("")}</section>` : ""}
@@ -765,7 +931,7 @@ async function submitForm() {
   const fd = new FormData(f), v = {};
   formState.fields.forEach(x => {
     const raw = fd.get(x.key) ?? "";
-    v[x.key] = x.type === "number" ? Number(raw) : String(raw).trim();
+    v[x.key] = x.type === "number" ? (raw === "" && x.optional ? "" : Number(raw)) : String(raw).trim();
   });
   const res = await formState.onSave(v);
   if (res) { if (res !== true) toast(res); return; }
@@ -788,6 +954,8 @@ function classForm(c) {
     { key: "start", label: "Start", type: "time", required: true },
     { key: "end", label: "End", type: "time", required: true },
     { key: "room", label: "Room / note", type: "text", ph: "e.g. A201, period 3" },
+    { key: "kind", label: "Type", type: "select", options: CLASS_KINDS },
+    { key: "weeks", label: "Weeks (only if the timetable has terms)", type: "text", ph: "Every week", hint: "e.g. 1-10 · 1-5, 7-11 · odd · even" },
     { key: "color", label: "Colour (changes for the whole subject)", type: "color" },
   ], values, v => {
     if (toMin(v.end) <= toMin(v.start)) return "End time must be after start time";
@@ -812,9 +980,11 @@ function todoForm(t, date) {
     { key: "text", label: "What to do", type: "text", required: true },
     { key: "date", label: "Date (optional)", type: "date" },
     { key: "priority", label: "Priority", type: "select", options: PRIORITIES },
+    { key: "repeat", label: "Repeat (next one appears when you tick it off)", type: "select", options: REPEATS },
     { key: "note", label: "Note", type: "textarea" },
-  ], t || { date: date ?? ymd(), priority: 0 }, v => {
+  ], t || { date: date ?? ymd(), priority: 0, repeat: "none" }, v => {
     v.priority = Number(v.priority);
+    if (v.repeat !== "none" && !v.date) v.date = ymd(); // repeating needs a date to count from
     if (isNew) db.todos.push({ id: uid(), done: false, ...v });
     else Object.assign(t, v);
   }, isNew ? null : () => { db.todos = db.todos.filter(x => x !== t); });
@@ -904,6 +1074,116 @@ function revisionForm(exam) {
   });
 }
 
+function termForm(t) {
+  const isNew = !t;
+  form(isNew ? "New term" : "Edit term", [
+    { key: "name", label: "Name", type: "text", required: true, ph: "e.g. Term 1, Fall semester" },
+    { key: "sched", label: "Timetable", type: "select", options: db.schedules.map(s => [s.id, s.name]) },
+    { key: "start", label: "First day (Week 1 starts that Monday)", type: "date", required: true },
+    { key: "end", label: "Last day", type: "date", required: true },
+  ], t || { sched: sched().id }, v => {
+    if (v.end < v.start) return "Last day can't be before the first day";
+    if (isNew) db.terms.push({ id: uid(), ...v });
+    else Object.assign(t, v);
+  }, isNew ? null : () => { db.terms = db.terms.filter(x => x !== t); });
+}
+
+function moduleForm(m) {
+  const isNew = !m;
+  form(isNew ? "New module" : "Edit module", [
+    { key: "name", label: "Module", type: "text", required: true, ph: "e.g. Linear Algebra" },
+    { key: "credits", label: "Credits (for the overall average)", type: "number", optional: true, ph: "e.g. 15" },
+    { key: "target", label: "Target mark (%)", type: "number", required: true },
+    { key: "link", label: "Course page link (Moodle / Canvas…)", type: "url", ph: "https://" },
+  ], m || { target: 70 }, v => {
+    if (isNew) { const x = { id: uid(), items: [], people: [], ...v }; db.modules.push(x); ui.pageId = x.id; ui.page = "module"; }
+    else Object.assign(m, v);
+  }, isNew ? null : () => { db.modules = db.modules.filter(x => x !== m); ui.page = "modules"; });
+}
+
+function assessForm(i) {
+  const m = curModule(), it = m.items[i], isNew = !it;
+  form(isNew ? "New assessment" : "Edit assessment", [
+    { key: "name", label: "Assessment", type: "text", required: true, ph: "e.g. Final exam" },
+    { key: "weight", label: "Weight (% of the module)", type: "number", required: true },
+    { key: "score", label: "Your mark (%) — leave empty until you get it back", type: "number", optional: true },
+  ], it || {}, v => {
+    if (!(v.weight > 0)) return "Weight must be more than 0";
+    if (v.score !== "" && (v.score < 0 || v.score > 100)) return "Mark must be 0–100";
+    if (isNew) m.items.push(v); else Object.assign(it, v);
+  }, isNew ? null : () => { m.items.splice(i, 1); });
+}
+
+function personForm(i) {
+  const m = curModule(), p = m.people[i], isNew = !p;
+  form(isNew ? "New person" : "Edit person", [
+    { key: "name", label: "Name", type: "text", required: true, ph: "e.g. Dr Smith" },
+    { key: "role", label: "Role", type: "select", options: PEOPLE_ROLES },
+    { key: "email", label: "Email", type: "email" },
+    { key: "ohDay", label: "Office hours day", type: "select", options: [["", "None"], ...WEEK_ORDER.map(d => [d, DAYS_FULL[d]])] },
+    { key: "ohStart", label: "Office hours start", type: "time" },
+    { key: "ohEnd", label: "Office hours end", type: "time" },
+    { key: "ohPlace", label: "Where", type: "text", ph: "e.g. Room 3.14, Zoom" },
+  ], p || { role: "Lecturer", ohDay: "" }, v => {
+    if (v.ohDay !== "" && !v.ohStart) return "Add a start time for office hours";
+    if (isNew) m.people.push(v); else Object.assign(p, v);
+  }, isNew ? null : () => { m.people.splice(i, 1); });
+}
+
+function docForm(d) {
+  const isNew = !d;
+  form(isNew ? "New document" : "Edit document", [
+    { key: "name", label: "Document", type: "text", required: true, list: DOC_NAMES, ph: "e.g. Passport" },
+    { key: "expiry", label: "Expires on", type: "date", required: true },
+    { key: "note", label: "Note", type: "text", ph: "e.g. renew at the embassy" },
+  ], d || {}, v => {
+    if (isNew) db.docs.push({ id: uid(), ...v }); else Object.assign(d, v);
+  }, isNew ? null : () => { db.docs = db.docs.filter(x => x !== d); });
+}
+
+function recurringForm(x) {
+  const isNew = !x;
+  form(isNew ? "New fixed cost" : "Edit fixed cost", [
+    { key: "type", label: "Type", type: "select", options: [["out", "Spent"], ["in", "Income"]] },
+    { key: "amount", label: "Amount", type: "number", required: true },
+    { key: "category", label: "Category", type: "select", options: MONEY_CATS },
+    { key: "day", label: "Day of the month (1–28)", type: "number", required: true, hint: "If that day has already passed this month, it starts next month." },
+    { key: "note", label: "Note", type: "text", ph: "e.g. Rent, phone plan, Spotify" },
+  ], x || { type: "out", category: "Rent", day: 1 }, v => {
+    if (!(v.amount > 0)) return "Amount must be more than 0";
+    v.day = Math.round(v.day);
+    if (!(v.day >= 1 && v.day <= 28)) return "Pick a day from 1 to 28";
+    if (isNew) {
+      // If that day already passed this month, start next month
+      db.recurring.push({ id: uid(), ...v, last: v.day < new Date().getDate() ? ymd().slice(0, 7) : "" });
+    } else Object.assign(x, v);
+    applyRecurring();
+  }, isNew ? null : () => { db.recurring = db.recurring.filter(y => y !== x); });
+}
+
+// Add this month's fixed costs once their day has come
+function applyRecurring() {
+  const month = ymd().slice(0, 7), today = new Date().getDate();
+  let added = 0;
+  db.recurring.forEach(r => {
+    if (r.last === month || today < r.day) return;
+    db.money.push({ id: uid(), type: r.type, amount: r.amount, category: r.category, date: `${month}-${pad(r.day)}`, note: r.note || "", auto: true });
+    r.last = month; added++;
+  });
+  return added;
+}
+
+// Next date for a repeating to-do
+function nextDate(ds, rep) {
+  const d = parseYmd(ds);
+  if (rep === "daily") return ymd(addDays(d, 1));
+  if (rep === "weekly") return ymd(addDays(d, 7));
+  const months = rep === "yearly" ? 12 : 1;
+  const n = new Date(d.getFullYear(), d.getMonth() + months, 1);
+  n.setDate(Math.min(d.getDate(), new Date(n.getFullYear(), n.getMonth() + 1, 0).getDate()));
+  return ymd(n);
+}
+
 function holidayForm(h) {
   const isNew = !h;
   form(isNew ? "New holiday" : "Edit holiday", [
@@ -988,6 +1268,8 @@ function endTimer(record, finished) {
 }
 
 function tick() {
+  const hc = $("#homeClock");
+  if (hc) hc.textContent = homeTime();
   if (!db.timer) return;
   if (Date.now() >= db.timer.end) return endTimer(true, true);
   const el = $("#clock");
@@ -1233,7 +1515,7 @@ function quickAdd(f) {
   if (!q) return;
   if (q.kind === "event") db.events.push({ id: uid(), title: q.title, date: q.date, endDate: "", start: q.start, end: q.start ? q.end : "", repeat: q.repeat, remind: "30", color: PALETTE[8], note: "" });
   else if (q.kind === "task") db.tasks.push({ id: uid(), title: q.title, subject: q.subject, type: "Homework", due: q.date, note: "", done: false });
-  else db.todos.push({ id: uid(), text: q.title, date: q.date, priority: 0, note: "", done: false });
+  else db.todos.push({ id: uid(), text: q.title, date: q.date, priority: 0, repeat: q.repeat, note: "", done: false });
   save(); render();
   toast("Added ✅ " + quickText(q).replace(/<[^>]+>/g, ""));
 }
@@ -1324,7 +1606,7 @@ function slideIn(dir, onCal) {
 const ACT = {
   tab: id => { ui.tab = id; ui.page = null; render(); scrollTo(0, 0); slideIn(0); },
   open: id => { ui.page = id; render(); scrollTo(0, 0); slideIn(0); },
-  back: () => { ui.page = ui.page === "uni" ? "unis" : null; render(); },
+  back: () => { ui.page = { uni: "unis", module: "modules" }[ui.page] || null; render(); },
   closeModal, submitForm, deleteForm,
 
   goList: mode => { ui.listMode = mode; ACT.tab("list"); },
@@ -1334,7 +1616,22 @@ const ACT = {
   addTodo: () => todoForm(null),
   addTodoOn: date => todoForm(null, date),
   editTodo: id => todoForm(find(db.todos, id)),
-  toggleTodo: id => { const t = find(db.todos, id); t.done = !t.done; t.doneAt = t.done ? ymd() : null; save(); render(); },
+  toggleTodo: id => {
+    const t = find(db.todos, id);
+    t.done = !t.done; t.doneAt = t.done ? ymd() : null;
+    if (t.done && t.repeat && t.repeat !== "none" && t.date) {
+      // Repeating: tick it off and the next one appears
+      const next = { ...t, id: uid(), done: false, doneAt: null, date: nextDate(t.date, t.repeat) };
+      delete next.nextId;
+      db.todos.push(next); t.nextId = next.id;
+      toast(`Next one: ${fmtDate(next.date)} 🔁`);
+    } else if (!t.done && t.nextId) {
+      // Un-ticked: remove the copy it made (if not done yet)
+      db.todos = db.todos.filter(x => !(x.id === t.nextId && !x.done));
+      delete t.nextId;
+    }
+    save(); render();
+  },
 
   pickDate: ds => { ui.selDate = ds; if (ds.slice(0, 7) !== ui.calMonth) ui.calMonth = ds.slice(0, 7); render(); },
   calMonth: n => {
@@ -1394,6 +1691,31 @@ const ACT = {
   planRevision: id => revisionForm(find(db.exams, id)),
   addHoliday: () => holidayForm(null),
   editHoliday: id => holidayForm(find(db.holidays, id)),
+  addTerm: () => termForm(null),
+  editTerm: id => termForm(find(db.terms, id)),
+
+  addModule: () => moduleForm(null),
+  editModule: id => moduleForm(find(db.modules, id)),
+  openModule: id => { ui.pageId = id; ui.page = "module"; render(); scrollTo(0, 0); },
+  addAssess: () => assessForm(-1),
+  editAssess: i => assessForm(Number(i)),
+  addPerson: () => personForm(-1),
+  editPerson: i => personForm(Number(i)),
+
+  addDoc: () => docForm(null),
+  editDoc: id => docForm(find(db.docs, id)),
+  togglePrep: i => { const it = db.prep[Number(i)]; it.done = !it.done; save(); render(); },
+  delPrep: i => { db.prep.splice(Number(i), 1); save(); render(); },
+
+  addRecurring: () => recurringForm(null),
+  editRecurring: id => recurringForm(find(db.recurring, id)),
+  moneySettings: () => form("Money settings", [
+    { key: "currency", label: "Currency", type: "select", options: CURRENCIES },
+    { key: "budget", label: "Monthly budget (0 = none)", type: "number", required: true },
+  ], db.settings, v => {
+    if (!(v.budget >= 0)) return "Budget can't be negative";
+    Object.assign(db.settings, { currency: v.currency, budget: v.budget });
+  }),
 
   addUni: () => uniForm(null),
   editUni: id => uniForm(find(db.unis, id)),
@@ -1460,6 +1782,12 @@ const SUBMIT = {
     db.todos.push({ id: uid(), text, date: ymd(), priority: 0, done: false });
     save(); render();
   },
+  addPrep: f => {
+    const text = f.elements.text.value.trim();
+    if (!text) return;
+    db.prep.push({ text, done: false });
+    save(); render();
+  },
   addItem: f => {
     const text = f.elements.text.value.trim();
     if (!text) return;
@@ -1469,6 +1797,7 @@ const SUBMIT = {
 };
 
 const CHANGE = {
+  gradeSystem: el => { db.settings.gradeSystem = el.value; save(); render(); },
   taskRemind: el => { db.settings.taskRemind = el.value; save(); toast(el.value ? `Reminders at ${el.value} the evening before 🔔` : "Homework & exam reminders off"); },
   switchSched: el => { db.activeSchedule = el.value; save(); render(); },
   bgCustom: el => { localStorage.removeItem(BG_KEY); db.settings.bgColor = el.value; save(); render(); },
@@ -1490,12 +1819,13 @@ document.addEventListener("input", e => {
 document.addEventListener("change", e => { const el = e.target.closest("[data-change]"); if (el) CHANGE[el.dataset.change](el); });
 document.addEventListener("visibilitychange", () => {
   if (document.hidden) { if (pushPending) { clearTimeout(pushTimer); runSync(push); } }
-  else { tick(); render(); pullIfStale(); }
+  else { if (applyRecurring()) save(); tick(); render(); pullIfStale(); }
 });
 // When another window changes the data, update here too so old data doesn't overwrite new data
 window.addEventListener("storage", e => { if (e.key === KEY) { db = load(); render(); } });
 setInterval(tick, 1000);
 
+if (applyRecurring()) save();
 render();
 pullIfStale();
 
