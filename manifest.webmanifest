@@ -1,7 +1,7 @@
 {
   "name": "My HQ",
   "short_name": "My HQ",
-  "lang": "zh-Hant",
+  "lang": "en",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",

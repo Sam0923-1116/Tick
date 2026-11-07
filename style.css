@@ -23,6 +23,12 @@ header button { background: none; border: 0; color: var(--accent); font-size: 17
 #topAction button.txt { font-size: 17px; }
 
 main { padding: 0 16px calc(env(safe-area-inset-bottom) + 90px); max-width: 640px; margin: 0 auto; }
+body { overflow-x: hidden; }
+/* Page slides in after a swipe */
+#view.slide-l { animation: slideL .25s ease-out; }
+#view.slide-r { animation: slideR .25s ease-out; }
+@keyframes slideL { from { transform: translateX(48px); opacity: .2; } to { transform: none; opacity: 1; } }
+@keyframes slideR { from { transform: translateX(-48px); opacity: .2; } to { transform: none; opacity: 1; } }
 
 nav#tabs { position: fixed; bottom: 0; left: 0; right: 0; z-index: 5; display: flex;
   background: var(--card); border-top: 1px solid var(--line); padding-bottom: env(safe-area-inset-bottom); }
